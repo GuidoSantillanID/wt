@@ -186,6 +186,24 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 12. Print main_wt to stdout (shell wrapper uses this to cd back)
 ```
 
+### `wt sync`
+
+```
+1. git rev-parse --show-toplevel → repo_root
+2. Verify: repo_root/.git is a FILE → in a worktree; dir → error "main checkout"
+3. Read .wt-meta: base_branch, branch, description
+4. Validate: no uncommitted changes (git status --porcelain)
+5. git fetch origin <base_branch> (warn on failure, continue)
+6. Resolve rebase target:
+   - if origin/<base_branch> ref exists → use it (ensures remote state)
+   - else fall back to local <base_branch>
+7. git rebase <rebase_target>
+   → on conflict: git rebase --abort; print manual instructions; exit 1
+8. Print success — no stdout output, no cleanup
+```
+
+Key difference from `wt finish`: rebases onto `origin/<base_branch>` (not local), no confirmation, no fast-forward, no cleanup, no cd.
+
 ### `wt drop`
 
 ```
@@ -567,10 +585,8 @@ The bash `wt-test` has 71 tests as of v8. Each maps to a unit/integration test i
 
 ## Future ideas
 
-- **`wt sync`**: rebase worktree branch onto latest main/dev to prevent drift
 - **`wt pr`**: push and open a PR instead of direct merge (via `gh pr create`)
 - **`wt status`**: show current worktree info (branch, base, commits ahead, age) when inside one
-- **`wt rebase`**: alias for `wt sync`
 - **`wt log`**: history of finished/dropped worktrees (currently no persistent log)
 - **Per-project config** (`~/.config/wt/config`): default merge target, branch prefix, auto-tmux flag
 - **Shell completions**: `wt new <TAB>` lists projects from search paths

@@ -9,6 +9,7 @@ Works great standalone. Works *especially* well with **Claude Code + tmux** — 
 ```
 wt new "add dark mode toggle"     # create worktree + branch, cd into it
 wt finish                         # rebase + fast-forward + clean up
+wt sync                           # rebase onto latest base (keep it current)
 wt drop                           # abandon without merging
 wt list                           # show all active worktrees
 ```
@@ -86,6 +87,9 @@ wt list
 # (run from inside the worktree)
 wt finish
 
+# Keep a long-lived worktree current with the base branch
+wt sync
+
 # Abandon work without merging
 wt drop
 
@@ -130,6 +134,19 @@ Integrates the worktree back into its base branch. Always produces a linear hist
 10. `cd`s back to main checkout (via shell wrapper)
 
 > `wt done` still works as an alias for backward compatibility.
+
+### `wt sync`
+
+Rebases the current worktree branch onto the latest base branch from origin. Keeps long-lived worktrees current without finishing them.
+
+**Steps:**
+1. Verifies you're in a worktree — errors if not
+2. Aborts if there are uncommitted changes
+3. Fetches `origin/<base_branch>` (warns on failure, falls back to local ref)
+4. Rebases the worktree branch onto `origin/<base_branch>` — aborts and prints manual instructions if there are conflicts
+5. Prints success — worktree stays intact, no cleanup
+
+Unlike `wt finish`, sync does not merge into the base, remove the worktree, or change your working directory.
 
 ### `wt drop`
 

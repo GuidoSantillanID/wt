@@ -9,6 +9,7 @@
 # COMMANDS
 #   wt new [project] "<description>"   Create a worktree with auto-named branch
 #   wt finish                          Rebase + fast-forward into base, clean up
+#   wt sync                            Rebase onto latest base branch (from origin)
 #   wt drop                            Abandon worktree without merging, clean up
 #   wt list                            Show all worktrees across projects
 #   wt help                            Show this help
@@ -191,6 +192,7 @@ wt — Git Worktree Lifecycle Tool
 USAGE
   wt new [project] "<description>"   Create a worktree with auto-named branch
   wt finish                          Rebase onto base, fast-forward, clean up
+  wt sync                            Rebase onto latest base branch (from origin)
   wt drop                            Abandon worktree without merging, clean up
   wt list                            Show all active worktrees across projects
   wt doctor                          Check for orphaned branches/dirs, fix interactively
@@ -206,6 +208,9 @@ EXAMPLES
   # Rebase onto base and clean up (run from inside a worktree):
   wt finish
 
+  # Rebase worktree onto latest base (run from inside a worktree):
+  wt sync
+
   # Abandon a dead-end worktree without merging:
   wt drop
 
@@ -217,6 +222,7 @@ NOTES
   • Branch names: wt/<slug> (auto-generated from your description)
   • After `wt new`, your shell cd's into the new worktree automatically
   • After `wt finish`, your shell cd's back to the main worktree
+  • Use `wt sync` to keep long-lived worktrees current with the base branch
   • Configure search paths: export WT_SEARCH_PATHS=~/src:~/projects
   • Or create ~/.config/wt/config with one directory per line
 HELP
@@ -444,6 +450,62 @@ cmd_finish() {
 
   success "Done! Worktree rebased, integrated, and cleaned up."
   echo "$main_wt"
+}
+
+# wt sync — rebase worktree branch onto latest base (from origin)
+cmd_sync() {
+  local repo_root
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+    || error "Not inside a git repository"
+
+  [[ -d "${repo_root}/.git" ]] \
+    && error "You are in the main checkout, not a worktree."
+
+  local meta_file="${repo_root}/${META_FILE}"
+  [[ -f "$meta_file" ]] \
+    || error "No ${META_FILE} found. Was this worktree created with 'wt new'?"
+
+  local base_branch description branch
+  base_branch=$(read_meta "$meta_file" "base_branch")
+  description=$(read_meta "$meta_file" "description")
+  branch=$(read_meta "$meta_file" "branch")
+
+  [[ -z "$base_branch" || -z "$branch" ]] \
+    && error "Corrupt .wt-meta — missing required fields"
+
+  info "Worktree: ${BOLD}${branch}${RESET}"
+  info "Description: ${description}"
+  info "Base branch: ${BOLD}${base_branch}${RESET}"
+
+  # Safety: uncommitted changes
+  [[ -n "$(git status --porcelain)" ]] \
+    && error "Uncommitted changes present. Commit or stash before 'wt sync'."
+
+  # Fetch remote base branch to get latest (warn on failure, still try rebase)
+  info "Fetching origin/${base_branch}..."
+  git fetch origin "${base_branch}" >&2 2>/dev/null \
+    || warn "Could not fetch origin/${base_branch} — will rebase onto local ref"
+
+  # Prefer origin/<base_branch> (ensures we get remote state); fall back to local
+  local rebase_target="origin/${base_branch}"
+  if ! git rev-parse --verify "${rebase_target}" &>/dev/null; then
+    rebase_target="${base_branch}"
+    warn "No remote-tracking branch ${rebase_target} — using local ${base_branch}"
+  fi
+
+  info "Rebasing ${branch} onto ${rebase_target}..."
+
+  local rebase_err
+  if ! rebase_err=$(git rebase "${rebase_target}" 2>&1); then
+    git rebase --abort 2>/dev/null || true
+    warn "Rebase conflict. Aborted."
+    echo -e "Resolve manually:" >&2
+    echo -e "  cd ${repo_root} && git rebase ${rebase_target}" >&2
+    echo -e "  # resolve conflicts, then: wt sync" >&2
+    exit 1
+  fi
+
+  success "Synced — ${branch} is up to date with ${rebase_target}"
 }
 
 # wt drop — abandon worktree without merging
@@ -762,6 +824,7 @@ main() {
   case "$cmd" in
     new)            cmd_new "$@" ;;
     finish|done)    cmd_finish "$@" ;;
+    sync)           cmd_sync "$@" ;;
     drop)           cmd_drop "$@" ;;
     list|ls)        cmd_list "$@" ;;
     doctor)         cmd_doctor "$@" ;;

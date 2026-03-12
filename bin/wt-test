@@ -307,6 +307,57 @@ commit_log=$(git -C "$REPO" log --oneline -5)
 assert_contains     "fix commit landed on dev"   "fix sidebar overflow" "$commit_log"
 assert_not_contains "no merge commits"           "Merge" "$commit_log"
 
+# ── wt sync ───────────────────────────────────────────────────────────────────
+section "wt sync — error from main checkout"
+cd "$REPO"
+out_main=$(wt sync 2>&1 || true)
+assert_contains "errors when not in a worktree" "main checkout" "$out_main"
+
+section "wt sync — rebases onto diverged base"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_PATH_SYNC="${REPO}/.worktrees/sync-test"
+wt new "sync test" 2>/dev/null
+# Make a commit in the worktree
+echo "wt-work" > "${WT_PATH_SYNC}/wt-work.txt"
+git -C "$WT_PATH_SYNC" add wt-work.txt
+git -C "$WT_PATH_SYNC" commit -q -m "worktree commit"
+# Advance the base branch (simulates divergence)
+git -C "$REPO" checkout -q dev
+echo "base-advance" > "${REPO}/base-advance.txt"
+git -C "$REPO" add base-advance.txt
+git -C "$REPO" commit -q -m "base advanced"
+# Sync from worktree (no remote — falls back to local ref)
+cd "$WT_PATH_SYNC"
+out_sync=$(wt sync 2>&1)
+assert_contains "sync reports success" "Synced" "$out_sync"
+# Verify base commit is reachable in worktree
+assert_contains "base commit reachable" "base advanced" "$(git -C "$WT_PATH_SYNC" log --oneline -5)"
+# Verify worktree commit still present
+assert_contains "worktree commit preserved" "worktree commit" "$(git -C "$WT_PATH_SYNC" log --oneline -5)"
+# Verify linear history (no merge commits)
+assert_not_contains "no merge commits" "Merge" "$(git -C "$WT_PATH_SYNC" log --oneline -10)"
+# Verify worktree still exists (sync doesn't clean up)
+assert_dir_exists "worktree still intact" "$WT_PATH_SYNC"
+
+section "wt sync — already up to date"
+cd "$WT_PATH_SYNC"
+out_uptodate=$(wt sync 2>&1)
+assert_contains "sync succeeds when up to date" "Synced" "$out_uptodate"
+
+section "wt sync — blocks on dirty worktree"
+cd "$WT_PATH_SYNC"
+echo "dirty" > dirty-sync.txt
+out_dirty=$(wt sync 2>&1 || true)
+assert_contains "blocks on uncommitted changes" "Uncommitted changes" "$out_dirty"
+rm dirty-sync.txt
+
+# Clean up sync worktree
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+git -C "$REPO" worktree remove "$WT_PATH_SYNC" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/sync-test" 2>/dev/null || true
+
 # ── wt list — empty after cleanup ────────────────────────────────────────────
 section "wt list — empty after all worktrees cleaned up"
 # Clean up remaining worktrees from earlier tests
