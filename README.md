@@ -296,6 +296,4 @@ Tests create a real git repo in `/tmp`, run all commands against it, and clean u
 
 ## Workflow setup (optional)
 
-`wt` works standalone, but it was built for a Ghostty + tmux + Claude Code workflow. The `config/` directory in this repo contains the full stack config (Ghostty, tmux, Claude Code hooks, ccline status line, shell wrappers). `docs/SETUP.md` explains how the pieces connect and has step-by-step installation instructions.
-
-See `docs/SETUP.md` for step-by-step setup. To back up your local configs to this repo, run `./update-config.sh`.
+`wt` works standalone, but it was built for a Ghostty + tmux + Claude Code workflow. See the [cockpit](https://github.com/GuidoSantillanID/cockpit) repo for the full stack config (Ghostty, tmux, Claude Code hooks, ccline status line, shell wrappers) and step-by-step setup guide.
