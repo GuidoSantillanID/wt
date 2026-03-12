@@ -16,7 +16,7 @@ wt list                           # show all active worktrees
 ## Install
 
 ```bash
-git clone https://github.com/your-username/wt.git
+git clone https://github.com/GuidoSantillanID/wt.git
 cd wt
 ./install.sh
 ```
@@ -115,23 +115,37 @@ Creates a new git worktree with an auto-named branch.
 
 ### `wt finish`
 
-Integrates the worktree back into its base branch.
+Integrates the worktree back into its base branch. Always produces a linear history — no merge commits.
 
-1. Checks for uncommitted changes (blocks if any)
-2. Prompts for confirmation
-3. Fetches remote base branch (best-effort)
-4. Rebases worktree branch onto base
-5. Fast-forwards base branch to rebased tip
-6. Removes worktree directory and branch
-7. `cd`s back to main checkout (via shell wrapper)
+**Safety checks (in order):**
+1. Verifies you're in a worktree (not the main checkout) — errors if not
+2. Aborts if there are uncommitted changes (`git status` is dirty)
+3. Warns if an editor is still running in this worktree's tmux session (requires `claude_running_in_session()` override; no-op by default)
+4. Confirms: `Rebase wt/<slug> onto <base> and fast-forward? [y/N]`
+5. Fetches remote base branch (best-effort, ignores failure)
+6. Rebases worktree branch onto base — aborts and prints manual instructions if there are conflicts
+7. Fast-forwards base branch to the rebased tip
+8. Removes worktree directory and branch
+9. Kills tmux session `<project>/<slug>` if it exists (switches to project main session first if you're running from inside it)
+10. `cd`s back to main checkout (via shell wrapper)
+
+> `wt done` still works as an alias for backward compatibility.
 
 ### `wt drop`
 
-Abandons a worktree without merging.
+Abandons a worktree without merging — for dead-end experiments.
 
-1. Warns about uncommitted changes (prompts)
-2. Removes worktree directory and branch
-3. `cd`s back to main checkout (via shell wrapper)
+**Safety checks (in order):**
+1. Verifies you're in a worktree
+2. Warns if there are uncommitted changes — asks to confirm before proceeding
+3. Warns if an editor is still running in this session (requires `claude_running_in_session()` override)
+4. Final confirmation: `Drop wt/<slug>? (no merge) [y/N]`
+
+**On success:**
+- Worktree directory removed
+- Branch force-deleted (`git branch -D` — the branch was never merged)
+- Tmux session killed
+- `cd`s back to main checkout (via shell wrapper)
 
 ### `wt list`
 
@@ -193,6 +207,54 @@ claude_running_in_session() {
 }
 ```
 
+## Common workflows
+
+### Parallel feature development
+
+```bash
+# Window 1: main feature
+wt new myapp "implement user auth"
+
+# Window 2 (new tmux window): quick bugfix in parallel
+wt new myapp "fix logout redirect"
+
+# Check status of both
+wt list
+
+# Finish the bugfix first (from inside its worktree)
+wt finish   # rebases onto base, fast-forwards, cleans up
+
+# Continue main feature...
+```
+
+### Recovering from a conflict in `wt finish`
+
+If `wt finish` aborts due to a rebase conflict:
+
+```bash
+# You're still in the worktree
+git rebase <base-branch>   # resolve conflicts (git add + git rebase --continue)
+wt finish                  # retry — rebase already done, fast-forward proceeds cleanly
+```
+
+### Keeping worktrees visible in tmux
+
+With [tmux-sessionizer](https://github.com/ThePrimeagen/tmux-sessionizer), each worktree appears as a separate session automatically. Use your sessionizer keybind to fuzzy-find and switch between:
+```
+myapp/implement-user-auth
+myapp/fix-logout-redirect
+```
+
+## Notes
+
+- Worktrees share `.git` but **not** `node_modules`. Run your package manager after `wt new` in JS/Python projects. The tool will detect and prompt you.
+- The `.wt-meta` file inside each worktree is required by `wt finish` and `wt list`. Don't delete it.
+- Branch names are prefixed with `wt/` to keep them namespaced and easy to identify.
+- Descriptions are truncated to 50 characters when generating the slug.
+- `wt new` excludes `.worktrees/` from `git status` via `.git/info/exclude` (repo-local, not committed). This keeps your `.gitignore` clean. To adopt `wt` as a team tool, add `.worktrees/` to the committed `.gitignore` instead.
+- Running `wt new` from inside an existing worktree is safe — it detects the context and creates the new worktree from the main checkout, not nested inside the current one.
+- `wt drop` force-deletes the branch without merging. Use it when you want to discard the work entirely.
+
 ## Requirements
 
 - bash 4+ (macOS ships with bash 3.2; install via `brew install bash`)
@@ -206,3 +268,11 @@ bin/wt-test --keep   # preserve temp dir on failure for debugging
 ```
 
 Tests create a real git repo in `/tmp`, run all commands against it, and clean up.
+
+## Workflow setup (optional)
+
+`wt` works standalone, but it was built for a Ghostty + tmux + Claude Code workflow. The `config/` directory in this repo contains the full stack config (Ghostty, tmux, Claude Code hooks, ccline status line, shell wrappers). `docs/SETUP.md` explains how the pieces connect and has step-by-step installation instructions.
+
+```bash
+./install.sh --config   # install the full workflow config
+```
