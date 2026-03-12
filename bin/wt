@@ -7,7 +7,7 @@
 # parallel development workflows.
 #
 # COMMANDS
-#   wt new [project] "<description>"   Create a worktree with auto-named branch
+#   wt new [project] "<description>" [--no-claude]   Create a worktree with auto-named branch
 #   wt finish                          Rebase + fast-forward into base, clean up
 #   wt sync                            Rebase onto latest base branch (from origin)
 #   wt drop                            Abandon worktree without merging, clean up
@@ -190,13 +190,13 @@ cmd_help() {
 wt — Git Worktree Lifecycle Tool
 
 USAGE
-  wt new [project] "<description>"   Create a worktree with auto-named branch
-  wt finish                          Rebase onto base, fast-forward, clean up
-  wt sync                            Rebase onto latest base branch (from origin)
-  wt drop                            Abandon worktree without merging, clean up
-  wt list                            Show all active worktrees across projects
-  wt doctor                          Check for orphaned branches/dirs, fix interactively
-  wt help                            Show this help
+  wt new [project] "<description>" [--no-claude]   Create a worktree with auto-named branch
+  wt finish                                        Rebase onto base, fast-forward, clean up
+  wt sync                                          Rebase onto latest base branch (from origin)
+  wt drop                                          Abandon worktree without merging, clean up
+  wt list                                          Show all active worktrees across projects
+  wt doctor                                        Check for orphaned branches/dirs, fix interactively
+  wt help                                          Show this help
 
 EXAMPLES
   # From inside a project dir:
@@ -204,6 +204,9 @@ EXAMPLES
 
   # From anywhere, specifying project by name:
   wt new <project> "add dark mode toggle"
+
+  # Create a worktree without launching Claude:
+  wt new "quick tweak" --no-claude
 
   # Rebase onto base and clean up (run from inside a worktree):
   wt finish
@@ -220,7 +223,8 @@ EXAMPLES
 NOTES
   • Worktrees are created at <project>/.worktrees/<slug>/
   • Branch names: wt/<slug> (auto-generated from your description)
-  • After `wt new`, your shell cd's into the new worktree automatically
+  • After `wt new`, your shell cd's into the new worktree and claude launches
+  • Pass --no-claude to skip the automatic Claude launch
   • After `wt finish`, your shell cd's back to the main worktree
   • Use `wt sync` to keep long-lived worktrees current with the base branch
   • Configure search paths: export WT_SEARCH_PATHS=~/src:~/projects
