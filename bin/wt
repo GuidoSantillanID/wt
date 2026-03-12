@@ -7,7 +7,7 @@
 # parallel development workflows.
 #
 # COMMANDS
-#   wt new [--with-deps] [project] "<description>" [--no-claude]   Create a worktree with auto-named branch
+#   wt new [--with-deps] [project] "<description>"   Create a worktree with auto-named branch
 #   wt finish [--yes|-y]               Rebase + fast-forward into base, clean up
 #   wt sync                            Rebase onto latest base branch (from origin)
 #   wt drop [--yes|-y]                 Abandon worktree without merging, clean up
@@ -190,7 +190,7 @@ cmd_help() {
 wt — Git Worktree Lifecycle Tool
 
 USAGE
-  wt new [--with-deps] [project] "<description>" [--no-claude]   Create a worktree with auto-named branch
+  wt new [--with-deps] [project] "<description>"   Create a worktree with auto-named branch
   wt finish [--yes|-y]                             Rebase onto base, fast-forward, clean up
   wt sync                                          Rebase onto latest base branch (from origin)
   wt drop [--yes|-y]                               Abandon worktree without merging, clean up
@@ -208,9 +208,6 @@ EXAMPLES
   # From anywhere, specifying project by name:
   wt new <project> "add dark mode toggle"
 
-  # Create a worktree without launching Claude:
-  wt new "quick tweak" --no-claude
-
   # Rebase onto base and clean up (run from inside a worktree):
   wt finish
 
@@ -226,8 +223,7 @@ EXAMPLES
 NOTES
   • Worktrees are created at <project>/.worktrees/<slug>/
   • Branch names: wt/<slug> (auto-generated from your description)
-  • After `wt new`, your shell cd's into the new worktree and claude launches
-  • Pass --no-claude to skip the automatic Claude launch
+  • After `wt new`, your shell cd's into the new worktree
   • After `wt finish`, your shell cd's back to the main worktree
   • Pass --yes / -y to wt finish or wt drop to skip confirmation prompts
   • Use `wt sync` to keep long-lived worktrees current with the base branch
@@ -458,9 +454,7 @@ cmd_finish() {
   if ! rebase_err=$(git rebase -- "${base_branch}" 2>&1); then
     git rebase --abort 2>/dev/null || true
     warn "Rebase conflict. Aborted."
-    echo -e "Resolve manually:" >&2
-    echo -e "  cd ${repo_root} && git rebase ${base_branch}" >&2
-    echo -e "  # resolve conflicts, then: wt finish" >&2
+    echo -e "  Run 'wt sync' to rebase and resolve conflicts first, then retry 'wt finish'." >&2
     exit 1
   fi
   success "Rebase successful"
@@ -544,11 +538,9 @@ cmd_sync() {
 
   local rebase_err
   if ! rebase_err=$(git rebase "${rebase_target}" 2>&1); then
-    git rebase --abort 2>/dev/null || true
-    warn "Rebase conflict. Aborted."
-    echo -e "Resolve manually:" >&2
-    echo -e "  cd ${repo_root} && git rebase ${rebase_target}" >&2
-    echo -e "  # resolve conflicts, then: wt sync" >&2
+    warn "Rebase paused — conflicts detected."
+    echo -e "  Fix conflicts, then:  git add <files> && git rebase --continue" >&2
+    echo -e "  To abort:             git rebase --abort" >&2
     exit 1
   fi
 
