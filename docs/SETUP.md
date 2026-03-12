@@ -140,7 +140,7 @@ set -g allow-rename off
 ```
 
 Window names auto-update based on the current pane. The format:
-- `#{b:pane_current_path}` — shows the directory basename (e.g. `instadeep-ui`)
+- `#{b:pane_current_path}` — shows the directory basename (e.g. `my-app`)
 - If the command is `zsh` (plain shell), nothing extra is shown
 - Otherwise, the command name is appended in parens — with a substitution: version-like strings (e.g. `5.4`) are replaced with `claude` to handle Claude Code's process name
 
@@ -355,7 +355,7 @@ The config (`config.toml`) shows these segments in the status bar:
 - **Context window** — token usage gauge
 - **Usage** — API usage stats (cached for 3 minutes to avoid rate-limiting)
 
-Theme: `cometix` (ships with ccline). The `themes/guido-theme.toml` is a custom theme variant.
+Theme: `cometix` (ships with ccline). The `themes/wt-theme.toml` is a custom theme variant.
 
 ---
 

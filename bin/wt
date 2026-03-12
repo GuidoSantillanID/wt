@@ -342,7 +342,7 @@ EOF
     warn "Worktrees don't share node_modules/venv. You'll need: ${BOLD}${pm} install${RESET}"
     if confirm "Run '${pm} install' now?"; then
       info "Running ${pm} install..."
-      (cd "$worktree_path" && $pm install) \
+      (cd "$worktree_path" && "$pm" install) \
         || warn "${pm} install failed — run it manually."
       success "Dependencies installed"
     fi
@@ -408,7 +408,7 @@ cmd_finish() {
 
   # Rebase onto base — produces a linear history regardless of base drift
   local rebase_err
-  if ! rebase_err=$(git rebase "${base_branch}" 2>&1); then
+  if ! rebase_err=$(git rebase -- "${base_branch}" 2>&1); then
     git rebase --abort 2>/dev/null || true
     warn "Rebase conflict. Aborted."
     echo -e "Resolve manually:" >&2

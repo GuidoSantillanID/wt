@@ -15,7 +15,7 @@ if [[ -z "$selected" ]]; then
   exit 0
 fi
 
-# For worktrees, prefix session name with parent project: instadeep-ui/feat-x
+# For worktrees, prefix session name with parent project: my-app/feat-x
 parent=$(basename "$(dirname "$(dirname "$selected")")")
 base=$(basename "$selected")
 dir=$(basename "$(dirname "$selected")")

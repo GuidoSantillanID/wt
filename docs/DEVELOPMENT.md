@@ -14,8 +14,8 @@ A plain `key=value` text file written to the root of each worktree. No quoting â
 base_branch=dev
 created=2026-03-10T14:30:00
 description=fix the sidebar overflow bug
-project=instadeep-ui
-project_root=/Users/guido/Documents/dev/instadeep-ui
+project=my-app
+project_root=/home/user/projects/my-app
 slug=fix-the-sidebar-overflow-bug
 branch=wt/fix-the-sidebar-overflow-bug
 ```

@@ -71,8 +71,8 @@ backup_and_copy "$CONFIG_DIR/claude/CLAUDE.md"            "$HOME/.claude/CLAUDE.
 backup_and_copy "$CONFIG_DIR/claude/settings.json"        "$HOME/.claude/settings.json"
 backup_and_copy "$CONFIG_DIR/claude/ccline/config.toml"   "$HOME/.claude/ccline/config.toml"
 backup_and_copy "$CONFIG_DIR/claude/ccline/models.toml"   "$HOME/.claude/ccline/models.toml"
-backup_and_copy "$CONFIG_DIR/claude/ccline/themes/guido-theme.toml" \
-                "$HOME/.claude/ccline/themes/guido-theme.toml"
+backup_and_copy "$CONFIG_DIR/claude/ccline/themes/wt-theme.toml" \
+                "$HOME/.claude/ccline/themes/wt-theme.toml"
 
 echo ""
 echo "Shell functions — add to ~/.zshrc or ~/.bashrc:"
@@ -89,3 +89,4 @@ echo "       git clone https://github.com/catppuccin/tmux ~/.config/tmux/plugins
 echo "       # Then inside tmux: Ctrl+a I"
 echo "  3. Install ccline — see docs/SETUP.md for the download link"
 echo "  4. See docs/SETUP.md for the full workflow walkthrough"
+exit 0
