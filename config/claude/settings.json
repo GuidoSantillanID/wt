@@ -1,0 +1,64 @@
+{
+  "model": "opusplan",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "afplay /System/Library/Sounds/Glass.aiff"
+          },
+          {
+            "type": "command",
+            "command": "[ -n \"$TMUX\" ] && tmux set-option -w @claude_done 1 || true"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "afplay /System/Library/Sounds/Ping.aiff"
+          },
+          {
+            "type": "command",
+            "command": "[ -n \"$TMUX\" ] && tmux set-option -w @claude_done 1 || true"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/ccline/ccline",
+    "padding": 0
+  },
+  "enabledPlugins": {
+    "context7@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": true
+  },
+  "spinnerVerbs": {
+    "mode": "replace",
+    "verbs": [
+      "Ruining your codebase since 2022",
+      "🤖 beep boop 🤖",
+      "Calculating the meaning of life",
+      "Summoning the code demon",
+      "Debugging the matrix",
+      "Compiling your dreams",
+      "Optimizing for world domination",
+      "Refactoring reality",
+      "Transforming tickets into bugs",
+      "Hacking the planet",
+      "Decoding the universe",
+      "Simulating the singularity",
+      "Conjuring up solutions",
+      "Spinning up some magic"
+    ]
+  },
+  "autoMemoryEnabled": false,
+  "skipDangerousModePermissionPrompt": true
+}

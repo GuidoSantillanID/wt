@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+#
+# tmux-sessionizer — fuzzy project/worktree session picker
+#
+# CUSTOMIZE: Edit the paths below to match where your projects live.
+# The worktrees find uses the same roots, looking 3 levels deep for .worktrees/ dirs.
+
+# Top-level projects + worktrees inside each project
+projects=$(find ~/Documents/dev ~/Documents/lab -mindepth 1 -maxdepth 1 -type d)
+worktrees=$(find ~/Documents/dev ~/Documents/lab -mindepth 3 -maxdepth 3 -type d -path '*/.worktrees/*')
+
+selected=$(echo -e "$projects\n$worktrees" | fzf)
+
+if [[ -z "$selected" ]]; then
+  exit 0
+fi
+
+# For worktrees, prefix session name with parent project: instadeep-ui/feat-x
+parent=$(basename "$(dirname "$(dirname "$selected")")")
+base=$(basename "$selected")
+dir=$(basename "$(dirname "$selected")")
+
+if [[ "$dir" == ".worktrees" ]]; then
+  session_name="${parent}/${base}"
+else
+  session_name="$base"
+fi
+
+session_name=$(echo "$session_name" | tr . _)
+tmux_running=$(pgrep tmux)
+
+if [[ -z "$TMUX" ]] && [[ -z "$tmux_running" ]]; then
+  tmux new-session -s "$session_name" -c "$selected"
+  exit 0
+fi
+
+if ! tmux has-session -t "$session_name" 2>/dev/null; then
+  tmux new-session -d -s "$session_name" -c "$selected"
+fi
+
+tmux switch-client -t "$session_name"
