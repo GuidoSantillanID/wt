@@ -7,7 +7,7 @@
 # parallel development workflows.
 #
 # COMMANDS
-#   wt new [project] "<description>" [--no-claude]   Create a worktree with auto-named branch
+#   wt new [--with-deps] [project] "<description>" [--no-claude]   Create a worktree with auto-named branch
 #   wt finish [--yes|-y]               Rebase + fast-forward into base, clean up
 #   wt sync                            Rebase onto latest base branch (from origin)
 #   wt drop [--yes|-y]                 Abandon worktree without merging, clean up
@@ -190,7 +190,7 @@ cmd_help() {
 wt — Git Worktree Lifecycle Tool
 
 USAGE
-  wt new [project] "<description>" [--no-claude]   Create a worktree with auto-named branch
+  wt new [--with-deps] [project] "<description>" [--no-claude]   Create a worktree with auto-named branch
   wt finish [--yes|-y]                             Rebase onto base, fast-forward, clean up
   wt sync                                          Rebase onto latest base branch (from origin)
   wt drop [--yes|-y]                               Abandon worktree without merging, clean up
@@ -201,6 +201,9 @@ USAGE
 EXAMPLES
   # From inside a project dir:
   wt new "fix the sidebar overflow bug"
+
+  # Copy node_modules from main checkout (zero-cost on APFS/btrfs):
+  wt new --with-deps "quick fix for header"
 
   # From anywhere, specifying project by name:
   wt new <project> "add dark mode toggle"
@@ -233,16 +236,37 @@ NOTES
 HELP
 }
 
-# wt new [project] "<description>"
+copy_node_modules() {
+  local src="$1" dest="$2"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    cp -c -R "$src" "$dest" 2>/dev/null && return 0
+  fi
+  cp --reflink=auto -R "$src" "$dest" 2>/dev/null && return 0
+  cp -R "$src" "$dest"
+}
+
+# wt new [--with-deps] [project] "<description>"
 cmd_new() {
   local project_arg=""
   local description=""
+  local with_deps=0
+
+  # Extract flags
+  local args=()
+  for arg in "$@"; do
+    case "$arg" in
+      --with-deps) with_deps=1 ;;
+      -*) error "Unknown flag: $arg" ;;
+      *) args+=("$arg") ;;
+    esac
+  done
+  set -- "${args[@]}"
 
   case $# in
-    0) error "Usage: wt new [project] \"<description>\"" ;;
+    0) error "Usage: wt new [--with-deps] [project] \"<description>\"" ;;
     1) description="$1" ;;
     2) project_arg="$1"; description="$2" ;;
-    *) error "Usage: wt new [project] \"<description>\"" ;;
+    *) error "Usage: wt new [--with-deps] [project] \"<description>\"" ;;
   esac
 
   [[ -z "$description" ]] && error "Description cannot be empty"
@@ -332,7 +356,9 @@ EOF
 
   # Detect package manager and prompt for dep install
   local pm=""
+  local is_js=0
   if [[ -f "${worktree_path}/package.json" ]]; then
+    is_js=1
     if   [[ -f "${worktree_path}/pnpm-lock.yaml" ]]; then pm="pnpm"
     elif [[ -f "${worktree_path}/yarn.lock"       ]]; then pm="yarn"
     else                                                   pm="npm"
@@ -343,7 +369,14 @@ EOF
   elif [[ -f "${worktree_path}/pyproject.toml"    ]]; then pm="pip"
   fi
 
-  if [[ -n "$pm" ]]; then
+  if (( with_deps == 0 )); then
+    : # skip — no deps handling
+  elif (( is_js == 1 )) && [[ -d "${project_root}/node_modules" ]]; then
+    info "Copying node_modules from main checkout..."
+    copy_node_modules "${project_root}/node_modules" "${worktree_path}/node_modules" \
+      && success "node_modules copied (CoW if supported by filesystem)" \
+      || warn "node_modules copy failed — run '${pm} install' manually."
+  elif [[ -n "$pm" ]]; then
     warn "Worktrees don't share node_modules/venv. You'll need: ${BOLD}${pm} install${RESET}"
     if confirm "Run '${pm} install' now?"; then
       info "Running ${pm} install..."

@@ -77,6 +77,9 @@ export WT_SEARCH_PATHS=~/src:~/projects:~/work
 # Create a worktree from inside a project directory
 wt new "fix the login bug"
 
+# Copy node_modules from main checkout (zero-cost on APFS/btrfs)
+wt new --with-deps "fix the login bug"
+
 # Create from anywhere by specifying the project name
 wt new myapp "add dark mode"
 
@@ -108,14 +111,15 @@ wt doctor
 
 ## Commands reference
 
-### `wt new [project] "<description>"`
+### `wt new [--with-deps] [project] "<description>"`
 
 Creates a new git worktree with an auto-named branch.
 
 - If run from inside a project, uses the current repo
 - If run from outside, pass the project name as the first argument
 - If run from inside an existing worktree, creates from the main checkout
-- Detects package manager (pnpm/yarn/npm/uv/poetry/pip) and offers to install deps
+- By default, skips all dependency handling — worktree creation is instant with no prompts
+- `--with-deps`: opt into dependency handling. For JS projects with `node_modules/` in the main checkout, copies it using copy-on-write cloning (`cp -c` on APFS, `--reflink=auto` on btrfs/XFS) — zero extra disk space on supported filesystems, 10–30× faster than `npm install` on ext4. Otherwise, detects the package manager (pnpm/yarn/npm/uv/poetry/pip) and prompts to install.
 
 ### `wt finish [--yes|-y]`
 
@@ -268,7 +272,7 @@ myapp/fix-logout-redirect
 
 ## Notes
 
-- Worktrees share `.git` but **not** `node_modules`. Run your package manager after `wt new` in JS/Python projects. The tool will detect and prompt you.
+- Worktrees share `.git` but **not** `node_modules`. By default `wt new` skips deps handling entirely. Use `--with-deps` to copy `node_modules/` from the main checkout (JS, CoW) or to be prompted to install (JS without `node_modules/` or non-JS projects).
 - The `.wt-meta` file inside each worktree is required by `wt finish` and `wt list`. Don't delete it.
 - Branch names are prefixed with `wt/` to keep them namespaced and easy to identify.
 - Descriptions are truncated to 50 characters when generating the slug.

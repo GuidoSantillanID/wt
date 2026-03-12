@@ -495,6 +495,103 @@ printf "y\n" | wt doctor 2>/dev/null || true
 stale_branch=$(git -C "$REPO" rev-parse --verify "wt/stale-wt" 2>/dev/null || echo "gone")
 assert_eq "stale branch cleaned up after fix" "gone" "$stale_branch"
 
+# ── wt new --with-deps ───────────────────────────────────────────────────────
+section "wt new --with-deps — unknown flag error"
+cd "$REPO"
+out=$(wt new --foo "something" 2>&1 || true)
+assert_contains "unknown flag error" "Unknown flag" "$out"
+
+section "wt new --with-deps — JS project with node_modules present"
+# Add package.json to dev branch and create node_modules in main checkout
+git -C "$REPO" checkout -q dev
+echo '{"name":"test-project","version":"1.0.0"}' > "${REPO}/package.json"
+git -C "$REPO" add package.json
+git -C "$REPO" commit -q -m "add package.json"
+mkdir -p "${REPO}/node_modules/some-pkg"
+echo '{"name":"some-pkg"}' > "${REPO}/node_modules/some-pkg/package.json"
+
+cd "$REPO"
+WT_CD="${REPO}/.worktrees/with-deps-test"
+stdout_cd=$(wt new --with-deps "with deps test" 2>/dev/null)
+assert_eq          "stdout is worktree path"            "$WT_CD" "$stdout_cd"
+assert_dir_exists  "worktree created"                   "$WT_CD"
+assert_dir_exists  "node_modules copied to worktree"    "${WT_CD}/node_modules"
+assert_dir_exists  "nested package copied"              "${WT_CD}/node_modules/some-pkg"
+# Cleanup
+git -C "$REPO" worktree remove "${WT_CD}" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/with-deps-test" 2>/dev/null || true
+rm -rf "${REPO}/node_modules"
+
+section "wt new --with-deps — JS project without node_modules prompts to install"
+cd "$REPO"
+# No node_modules/ in project_root now
+WT_CDN="${REPO}/.worktrees/with-deps-no-nm"
+_tmp_cdn=$(mktemp)
+stdout_cdn=$(printf "n\n" | wt new --with-deps "with deps no nm" 2>"$_tmp_cdn")
+out_cdn=$(cat "$_tmp_cdn"); rm -f "$_tmp_cdn"
+assert_eq          "stdout is worktree path"            "${WT_CDN}" "$stdout_cdn"
+assert_dir_exists  "worktree still created"             "${WT_CDN}"
+assert_contains    "warns about needing install"        "node_modules/venv" "$out_cdn"
+# Cleanup
+git -C "$REPO" worktree remove "${WT_CDN}" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/with-deps-no-nm" 2>/dev/null || true
+
+section "wt new (no flag) — JS project with node_modules: no copy, no prompt"
+cd "$REPO"
+# package.json is on dev; add node_modules back
+mkdir -p "${REPO}/node_modules/some-pkg"
+echo '{"name":"some-pkg"}' > "${REPO}/node_modules/some-pkg/package.json"
+WT_NF="${REPO}/.worktrees/no-flag-js"
+_tmp_nf=$(mktemp)
+stdout_nf=$(wt new "no flag js" 2>"$_tmp_nf")
+out_nf=$(cat "$_tmp_nf"); rm -f "$_tmp_nf"
+assert_eq             "stdout is worktree path"            "${WT_NF}" "$stdout_nf"
+assert_dir_exists     "worktree created"                   "${WT_NF}"
+assert_not_contains   "no install prompt without flag"     "install"  "$out_nf"
+assert_dir_not_exists "node_modules not copied without flag" "${WT_NF}/node_modules"
+# Cleanup
+git -C "$REPO" worktree remove "${WT_NF}" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/no-flag-js" 2>/dev/null || true
+rm -rf "${REPO}/node_modules"
+
+section "wt new --with-deps — non-JS project prompts to install"
+# Use main branch (no package.json); add requirements.txt to trigger pip detection
+git -C "$REPO" checkout -q main
+echo "requests" > "${REPO}/requirements.txt"
+git -C "$REPO" add requirements.txt
+git -C "$REPO" commit -q -m "add requirements.txt"
+cd "$REPO"
+WT_NONJS="${REPO}/.worktrees/with-deps-non-js"
+_tmp_nonjs=$(mktemp)
+stdout_nonjs=$(printf "n\n" | wt new --with-deps "with deps non js" 2>"$_tmp_nonjs")
+out_nonjs=$(cat "$_tmp_nonjs"); rm -f "$_tmp_nonjs"
+assert_eq         "stdout is worktree path"    "${WT_NONJS}" "$stdout_nonjs"
+assert_dir_exists "worktree created"           "${WT_NONJS}"
+assert_contains   "warns about needing install" "node_modules/venv" "$out_nonjs"
+# Cleanup
+git -C "$REPO" worktree remove "${WT_NONJS}" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/with-deps-non-js" 2>/dev/null || true
+git -C "$REPO" rm -q requirements.txt
+git -C "$REPO" commit -q -m "remove requirements.txt"
+git -C "$REPO" checkout -q dev
+
+section "wt new --with-deps — flag in any position"
+mkdir -p "${REPO}/node_modules"
+cd "$REPO"
+# Flag before project arg
+WT_FP="${REPO}/.worktrees/flag-pos-before"
+stdout_fp=$(wt new --with-deps test-project "flag pos before" 2>/dev/null)
+assert_eq "flag before project arg works" "$WT_FP" "$stdout_fp"
+git -C "$REPO" worktree remove "${WT_FP}" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/flag-pos-before" 2>/dev/null || true
+# Flag between project and description
+WT_FB="${REPO}/.worktrees/flag-pos-between"
+stdout_fb=$(wt new test-project --with-deps "flag pos between" 2>/dev/null)
+assert_eq "flag between project and desc works" "$WT_FB" "$stdout_fb"
+git -C "$REPO" worktree remove "${WT_FB}" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/flag-pos-between" 2>/dev/null || true
+rm -rf "${REPO}/node_modules"
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 echo ""
