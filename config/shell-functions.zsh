@@ -24,6 +24,10 @@ function claude() {
   fi
 }
 
+# claude-danger-zone — runs Claude Code with all permission prompts skipped.
+# Use when you trust the task and want uninterrupted autonomous operation.
+alias claude-danger-zone="claude --dangerously-skip-permissions"
+
 # wt — thin wrapper that enables `cd` into/out of worktrees.
 # wt new/finish/done/drop print the target path on stdout; this wrapper
 # captures it and calls cd. All other wt commands pass through unchanged.
