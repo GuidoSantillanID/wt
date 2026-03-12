@@ -1,0 +1,391 @@
+#!/usr/bin/env bash
+# =============================================================================
+# wt-test — Integration test suite for the `wt` worktree tool
+# =============================================================================
+# Usage: wt-test [--keep]
+#   --keep    Preserve the temp dir on failure (for debugging)
+#
+# Creates a real git repo in /tmp, runs all commands against it, cleans up.
+# =============================================================================
+
+set -euo pipefail
+
+WT="${WT_BIN:-$(dirname "$(cd "$(dirname "$0")" && pwd)")/bin/wt}"
+# If run as bin/wt-test, resolve relative to the script's directory
+if [[ ! -f "$WT" ]]; then
+  WT="$(cd "$(dirname "$0")" && pwd)/wt"
+fi
+KEEP=0
+[[ "${1:-}" == "--keep" ]] && KEEP=1
+
+# ─── Colors ──────────────────────────────────────────────────────────────────
+
+if [[ -t 1 ]]; then
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+  CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+else
+  RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; RESET=''
+fi
+
+# ─── Test framework ──────────────────────────────────────────────────────────
+
+PASS=0; FAIL=0
+
+pass() { echo -e "  ${GREEN}✓${RESET} $*"; PASS=$(( PASS + 1 )); }
+fail() { echo -e "  ${RED}✗${RESET} $*"; FAIL=$(( FAIL + 1 )); }
+section() { echo -e "\n${BOLD}${CYAN}▸ $*${RESET}"; }
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [[ "$actual" == "$expected" ]]; then pass "$desc"
+  else
+    fail "$desc"
+    echo -e "    expected: ${YELLOW}${expected}${RESET}"
+    echo -e "    actual:   ${RED}${actual}${RESET}"
+  fi
+}
+
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then pass "$desc"
+  else
+    fail "$desc"
+    echo -e "    expected to contain: ${YELLOW}${needle}${RESET}"
+    echo -e "    actual: ${RED}${haystack}${RESET}"
+  fi
+}
+
+assert_not_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then pass "$desc"
+  else
+    fail "$desc"
+    echo -e "    expected NOT to contain: ${YELLOW}${needle}${RESET}"
+    echo -e "    actual: ${RED}${haystack}${RESET}"
+  fi
+}
+
+assert_file_exists()     { [[ -f "$2" ]] && pass "$1" || fail "$1 (missing: $2)"; }
+assert_dir_exists()      { [[ -d "$2" ]] && pass "$1" || fail "$1 (missing: $2)"; }
+assert_dir_not_exists()  { [[ ! -d "$2" ]] && pass "$1" || fail "$1 (still exists: $2)"; }
+
+# Run wt with WT_SEARCH_PATHS pointing at our test base directory
+wt() { WT_SEARCH_PATHS="$test_base" bash "$WT" "$@"; }
+
+# ─── Setup ───────────────────────────────────────────────────────────────────
+
+TMPROOT=$(mktemp -d /tmp/wt-test-XXXXXX)
+# Resolve symlinks (macOS /tmp → /private/tmp) so path comparisons work
+TMPROOT=$(cd "$TMPROOT" && pwd -P)
+
+# test_base: single search path containing our test project
+test_base="${TMPROOT}/projects"
+mkdir -p "$test_base"
+
+# Create test git repo inside test_base
+REPO="${test_base}/test-project"
+mkdir -p "$REPO"
+git -C "$REPO" init -q
+git -C "$REPO" config user.email "test@test.com"
+git -C "$REPO" config user.name "Test"
+echo "hello" > "$REPO/README.md"
+git -C "$REPO" add README.md
+git -C "$REPO" commit -q -m "initial commit"
+git -C "$REPO" checkout -q -b dev
+echo "dev" > "$REPO/dev.txt"
+git -C "$REPO" add dev.txt
+git -C "$REPO" commit -q -m "dev commit"
+
+cleanup() {
+  if (( FAIL > 0 )) && (( KEEP == 1 )); then
+    echo -e "\n${YELLOW}--keep: temp dir preserved at ${TMPROOT}${RESET}"
+  else
+    rm -rf "$TMPROOT"
+  fi
+}
+trap cleanup EXIT
+
+echo -e "${BOLD}wt test suite${RESET}"
+echo -e "Repo:   ${CYAN}${REPO}${RESET}"
+echo -e "Binary: ${CYAN}${WT}${RESET}"
+
+# ─── Tests ───────────────────────────────────────────────────────────────────
+
+section "wt help"
+out=$(wt help 2>&1)
+assert_contains "USAGE"    "USAGE"    "$out"
+assert_contains "wt new"   "wt new"   "$out"
+assert_contains "wt finish" "wt finish" "$out"
+assert_contains "wt drop"  "wt drop"  "$out"
+assert_contains "wt list"  "wt list"  "$out"
+
+# ── Config: WT_SEARCH_PATHS ──────────────────────────────────────────────────
+section "config — WT_SEARCH_PATHS env var"
+# wt list uses WT_SEARCH_PATHS — verify it finds nothing in an unrelated dir
+empty_base=$(mktemp -d /tmp/wt-empty-XXXXXX)
+list_empty=$(WT_SEARCH_PATHS="$empty_base" bash "$WT" list 2>&1 || true)
+assert_contains "empty path: no worktrees found" "No active worktrees" "$list_empty"
+rm -rf "$empty_base"
+
+# ── wt new ──────────────────────────────────────────────────────────────────
+section "wt new — basic creation"
+
+cd "$REPO"
+WT_PATH="${REPO}/.worktrees/fix-the-sidebar-overflow-bug"
+
+stdout=$(wt new "fix the sidebar overflow bug" 2>/dev/null)
+
+assert_dir_exists  "worktree dir created"     "$WT_PATH"
+assert_file_exists ".wt-meta written"         "${WT_PATH}/.wt-meta"
+assert_eq          "stdout is worktree path"  "$WT_PATH" "$stdout"
+
+section "wt new — .wt-meta contents"
+meta="${WT_PATH}/.wt-meta"
+assert_contains "base_branch=dev"                         "base_branch=dev"                        "$(cat "$meta")"
+assert_contains "slug recorded"                           "slug=fix-the-sidebar-overflow-bug"      "$(cat "$meta")"
+assert_contains "branch recorded"                         "branch=wt/fix-the-sidebar-overflow-bug" "$(cat "$meta")"
+assert_contains "description recorded"                    "description=fix the sidebar overflow bug" "$(cat "$meta")"
+assert_not_contains "no shell quoting in meta"            "\\'"                                    "$(cat "$meta")"
+
+section "wt new — single quotes in description"
+cd "$REPO"
+stdout2=$(wt new "it's a tricky description" 2>/dev/null)
+WT_PATH2="${REPO}/.worktrees/its-a-tricky-description"
+meta2="${WT_PATH2}/.wt-meta"
+assert_dir_exists  "worktree dir created"                        "$WT_PATH2"
+assert_eq          "stdout is worktree path"                     "$WT_PATH2" "$stdout2"
+assert_contains    "slug strips apostrophe"                      "slug=its-a-tricky-description"     "$(cat "$meta2")"
+assert_contains    "description preserved with apostrophe"       "description=it's a tricky description" "$(cat "$meta2")"
+
+# ── .wt-meta not counted in dirty ───────────────────────────────────────────
+section "git status — .wt-meta excluded from dirty count"
+
+common_dir=$(git -C "$WT_PATH" rev-parse --git-common-dir 2>/dev/null)
+assert_file_exists ".git/info/exclude exists"       "${common_dir}/info/exclude"
+assert_contains    ".wt-meta in exclude"            ".wt-meta"     "$(cat "${common_dir}/info/exclude")"
+assert_contains    ".worktrees/ in exclude"         ".worktrees/"  "$(cat "${common_dir}/info/exclude")"
+assert_not_contains ".worktrees/ not in .gitignore" ".worktrees/"  "$(cat "${REPO}/.gitignore" 2>/dev/null)"
+
+dirty=$(git -C "$WT_PATH" status --porcelain 2>/dev/null)
+assert_eq "worktree status is clean" "" "$dirty"
+
+# ── wt list ─────────────────────────────────────────────────────────────────
+section "wt list — output"
+list_out=$(wt list 2>/dev/null)
+assert_contains    "shows branch"                "wt/fix-the-sidebar-overflow-bug" "$list_out"
+assert_contains    "shows clean"                 "clean"                           "$list_out"
+assert_not_contains "no dirty count shown"       "dirty"                           "$list_out"
+assert_contains    "shows description"           "fix the sidebar overflow bug"    "$list_out"
+
+section "wt list — age display is valid"
+# human_age() must produce something like "0m ago", "1h ago", etc.
+age_out=$(wt list 2>/dev/null)
+if [[ "$age_out" =~ [0-9]+[mhdw]\ ago ]]; then pass "age string matches [0-9]+[mhdw] ago"
+else fail "age string invalid or missing (got: $age_out)"; fi
+
+section "wt list — no ANSI codes when piped"
+piped=$(wt list 2>/dev/null | cat)
+assert_not_contains "no ESC codes" $'\033[' "$piped"
+
+# ── wt new conflicts ────────────────────────────────────────────────────────
+section "wt new — conflicts"
+cd "$REPO"
+out=$(wt new "fix the sidebar overflow bug" 2>&1 || true)
+assert_contains "error on duplicate" "already exists" "$out"
+
+# ── wt new from inside a worktree ────────────────────────────────────────────
+section "wt new — from inside an existing worktree"
+cd "$WT_PATH"
+stdout3=$(wt new "new from inside worktree" 2>/dev/null)
+expected3="${REPO}/.worktrees/new-from-inside-worktree"
+assert_eq          "creates in main checkout, not nested" "$expected3" "$stdout3"
+assert_dir_exists  "worktree exists at correct path"      "$expected3"
+assert_dir_not_exists "not nested inside current worktree" "${WT_PATH}/.worktrees/new-from-inside-worktree"
+
+# ── wt new — project-name arg ────────────────────────────────────────────────
+section "wt new — project-name arg (from outside repo)"
+cd "$TMPROOT"
+WT_PATH_P="${REPO}/.worktrees/task-via-project-name"
+stdout_p=$(wt new test-project "task via project name" 2>/dev/null)
+assert_eq         "stdout is worktree path"  "$WT_PATH_P" "$stdout_p"
+assert_dir_exists "worktree dir created"     "$WT_PATH_P"
+assert_contains   "project name in meta"     "project=test-project" "$(cat "${WT_PATH_P}/.wt-meta")"
+
+section "wt new — nonexistent project error"
+out=$(wt new fake-project "something" 2>&1 || true)
+assert_contains   "error mentions not found" "not found" "$out"
+
+# ── wt finish — safety checks ────────────────────────────────────────────────
+section "wt finish — dirty check"
+cd "$WT_PATH"
+echo "dirty" > dirty-file.txt
+out=$(wt finish 2>&1 || true)
+assert_contains "blocks on uncommitted changes" "Uncommitted changes" "$out"
+rm dirty-file.txt
+
+section "wt finish — error when run from main checkout"
+cd "$REPO"
+out=$(wt finish 2>&1 || true)
+assert_contains "errors when not in a worktree" "main checkout" "$out"
+
+# ── wt drop — dirty worktree ─────────────────────────────────────────────────
+section "wt drop — dirty worktree double-confirm"
+cd "$REPO"
+WT_PATH_DIRTY="${REPO}/.worktrees/dirty-drop-test"
+stdout_dd=$(wt new "dirty drop test" 2>/dev/null)
+assert_eq "created dirty drop worktree" "$WT_PATH_DIRTY" "$stdout_dd"
+cd "$WT_PATH_DIRTY"
+echo "uncommitted" > dirty-file.txt
+out=$(printf "y\ny\n" | wt drop 2>&1)
+assert_contains   "drop reports success"  "Dropped"  "$out"
+assert_dir_not_exists "dirty worktree removed" "$WT_PATH_DIRTY"
+branch_dd=$(git -C "$REPO" rev-parse --verify "wt/dirty-drop-test" 2>/dev/null || echo "gone")
+assert_eq         "dirty branch deleted"  "gone" "$branch_dd"
+
+# ── wt drop ──────────────────────────────────────────────────────────────────
+section "wt drop — abandons worktree without merging"
+# its-a-tricky-description has no dirty files (.wt-meta excluded), so only one confirm prompt
+cd "$WT_PATH2"
+_tmp_err2=$(mktemp)
+stdout_drop=$(printf "y\n" | wt drop 2>"$_tmp_err2")
+out=$(cat "$_tmp_err2"); rm -f "$_tmp_err2"
+assert_contains    "drop reports success"        "Dropped"  "$out"
+assert_eq          "drop stdout is main worktree path" "$REPO" "$stdout_drop"
+assert_dir_not_exists "worktree dir removed"     "$WT_PATH2"
+branch_exists=$(git -C "$REPO" rev-parse --verify "wt/its-a-tricky-description" 2>/dev/null || echo "gone")
+assert_eq          "branch force-deleted"        "gone" "$branch_exists"
+
+# ── wt finish — rebase + fast-forward ────────────────────────────────────────
+section "wt finish — rebase + fast-forward"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_PATH_FF="${REPO}/.worktrees/ff-test-task"
+stdout_ff=$(wt new "ff test task" 2>/dev/null)
+assert_eq "stdout is ff worktree path" "$WT_PATH_FF" "$stdout_ff"
+echo "ff" > "${WT_PATH_FF}/ff.txt"
+git -C "$WT_PATH_FF" add ff.txt
+git -C "$WT_PATH_FF" commit -q -m "ff commit"
+# Switch main checkout to main (not dev) so dev ref can be fast-forwarded
+git -C "$REPO" checkout -q main
+cd "$WT_PATH_FF"
+out_ff=$(printf "y\n" | wt finish 2>&1)
+assert_contains       "rebase reported"          "Rebase successful" "$out_ff"
+assert_contains       "fast-forward reported"    "Fast-forward" "$out_ff"
+assert_dir_not_exists "ff worktree removed"      "$WT_PATH_FF"
+branch_ff=$(git -C "$REPO" rev-parse --verify "wt/ff-test-task" 2>/dev/null || echo "gone")
+assert_eq             "ff branch deleted"        "gone" "$branch_ff"
+# Verify ff commit landed on dev
+git -C "$REPO" checkout -q dev
+assert_contains "ff commit landed on dev" "ff commit" "$(git -C "$REPO" log --oneline -5)"
+
+# ── wt finish — rebase when base has diverged ────────────────────────────────
+section "wt finish — rebase when base has diverged"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+# Add a commit to dev AFTER the worktree was created (simulates divergence)
+echo "base-change" > "${REPO}/base-change.txt"
+git -C "$REPO" add base-change.txt
+git -C "$REPO" commit -q -m "base diverged"
+cd "$WT_PATH"
+echo "fix" > fix.txt
+git -C "$WT_PATH" add fix.txt
+git -C "$WT_PATH" commit -q -m "fix sidebar overflow"
+
+_tmp_err=$(mktemp)
+stdout_done=$(printf "y\n" | wt finish 2>"$_tmp_err")
+out=$(cat "$_tmp_err"); rm -f "$_tmp_err"
+assert_contains       "finish reports success"         "Done!" "$out"
+assert_contains       "rebase performed"               "Rebase successful" "$out"
+assert_eq             "finish stdout is main worktree path" "$REPO" "$stdout_done"
+assert_dir_not_exists "worktree dir removed"           "$WT_PATH"
+branch_exists=$(git -C "$REPO" rev-parse --verify "wt/fix-the-sidebar-overflow-bug" 2>/dev/null || echo "gone")
+assert_eq             "branch deleted"                 "gone" "$branch_exists"
+
+# Verify linear history — no merge commits
+git -C "$REPO" checkout -q dev 2>/dev/null
+commit_log=$(git -C "$REPO" log --oneline -5)
+assert_contains     "fix commit landed on dev"   "fix sidebar overflow" "$commit_log"
+assert_not_contains "no merge commits"           "Merge" "$commit_log"
+
+# ── wt list — empty after cleanup ────────────────────────────────────────────
+section "wt list — empty after all worktrees cleaned up"
+# Clean up remaining worktrees from earlier tests
+if [[ -d "${REPO}/.worktrees/new-from-inside-worktree" ]]; then
+  git -C "$REPO" worktree remove "${REPO}/.worktrees/new-from-inside-worktree" --force 2>/dev/null || true
+  git -C "$REPO" branch -D "wt/new-from-inside-worktree" 2>/dev/null || true
+fi
+if [[ -d "$WT_PATH_P" ]]; then
+  git -C "$REPO" worktree remove "$WT_PATH_P" --force 2>/dev/null || true
+  git -C "$REPO" branch -D "wt/task-via-project-name" 2>/dev/null || true
+fi
+# "No active worktrees" goes to stderr (via info()), so capture both
+list_out=$(wt list 2>&1)
+assert_contains "shows 'no worktrees' message" "No active worktrees" "$list_out"
+
+# ── wt doctor ────────────────────────────────────────────────────────────────
+section "wt doctor — clean repo reports all good"
+cd "$REPO"
+out=$(printf "n\n" | wt doctor 2>&1) || true
+assert_contains "reports no issues when clean" "all good" "$out"
+
+section "wt doctor — orphaned branch detected and fixed"
+git -C "$REPO" branch wt/orphan-branch 2>/dev/null
+out=$(printf "n\n" | wt doctor 2>&1) || true
+assert_contains "reports orphaned branch" "orphan-branch" "$out"
+# Fix it
+printf "y\n" | wt doctor 2>/dev/null || true
+branch_orphan=$(git -C "$REPO" rev-parse --verify "wt/orphan-branch" 2>/dev/null || echo "gone")
+assert_eq "orphaned branch deleted after fix" "gone" "$branch_orphan"
+
+section "wt doctor — orphaned worktree dir detected and fixed"
+mkdir -p "${REPO}/.worktrees/ghost-dir"
+printf "base_branch=dev\nbranch=wt/ghost-dir\nslug=ghost-dir\n" > "${REPO}/.worktrees/ghost-dir/.wt-meta"
+out=$(printf "n\n" | wt doctor 2>&1) || true
+assert_contains "reports orphaned dir" "ghost-dir" "$out"
+# Fix it
+printf "y\n" | wt doctor 2>/dev/null || true
+assert_dir_not_exists "ghost dir removed after fix" "${REPO}/.worktrees/ghost-dir"
+
+section "wt doctor — corrupt .wt-meta detected"
+# Register a real worktree so check 2 (orphaned dir) doesn't fire — only check 3 (corrupt meta) fires
+git -C "$REPO" worktree add "${REPO}/.worktrees/corrupt-wt" -b "wt/corrupt-wt" >/dev/null 2>&1
+echo "base_branch=dev" > "${REPO}/.worktrees/corrupt-wt/.wt-meta"  # overwrite with corrupt meta (missing branch+slug)
+# No confirm prompts for this run — use temp file to avoid pipe stdout-swallowing issue
+_tmp_doc=$(mktemp)
+wt doctor > "$_tmp_doc" 2>&1 < /dev/null || true
+out=$(cat "$_tmp_doc"); rm -f "$_tmp_doc"
+assert_contains "reports corrupt meta" "Corrupt" "$out"
+git -C "$REPO" worktree remove "${REPO}/.worktrees/corrupt-wt" --force 2>/dev/null
+git -C "$REPO" branch -D "wt/corrupt-wt" 2>/dev/null
+
+section "wt doctor — missing info/exclude entries fixed"
+# Remove .worktrees/ from info/exclude to simulate missing entry
+EXCLUDE_FILE="${REPO}/.git/info/exclude"
+grep -v "^\.worktrees/$" "$EXCLUDE_FILE" > "${EXCLUDE_FILE}.tmp" && mv "${EXCLUDE_FILE}.tmp" "$EXCLUDE_FILE"
+out=$(printf "n\n" | wt doctor 2>&1) || true
+assert_contains "reports missing exclude entry" ".worktrees/" "$out"
+# Fix it
+printf "y\n" | wt doctor 2>/dev/null || true
+assert_contains ".worktrees/ restored in exclude" ".worktrees/" "$(cat "$EXCLUDE_FILE")"
+
+section "wt doctor — stale git worktree registration detected"
+# Simulate a stale registration by creating and then manually removing a worktree dir
+STALE_PATH="${REPO}/.worktrees/stale-wt"
+git -C "$REPO" worktree add "$STALE_PATH" -b "wt/stale-wt" >/dev/null 2>&1
+rm -rf "$STALE_PATH"  # remove dir without pruning
+out=$(printf "n\n" | wt doctor 2>&1) || true
+assert_contains "reports stale registration" "stale" "$out"
+# Fix it
+printf "y\n" | wt doctor 2>/dev/null || true
+stale_branch=$(git -C "$REPO" rev-parse --verify "wt/stale-wt" 2>/dev/null || echo "gone")
+assert_eq "stale branch cleaned up after fix" "gone" "$stale_branch"
+
+# ─── Summary ─────────────────────────────────────────────────────────────────
+
+echo ""
+echo -e "${BOLD}────────────────────────────────${RESET}"
+total=$(( PASS + FAIL ))
+echo -e "  ${GREEN}${PASS} passed${RESET}  ${RED}${FAIL} failed${RESET}  (${total} total)"
+echo -e "${BOLD}────────────────────────────────${RESET}"
+
+(( FAIL == 0 ))

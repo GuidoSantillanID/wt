@@ -1,0 +1,22 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bash 4+ (macOS ships with bash 3.2)
+        if: runner.os == 'macOS'
+        run: brew install bash
+
+      - name: Run tests
+        run: bash bin/wt-test
