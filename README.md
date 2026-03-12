@@ -4,6 +4,8 @@ Automates creating, tracking, rebasing, and cleaning up git worktrees for
 parallel development workflows. Create isolated branches in seconds, work on
 multiple features simultaneously, and merge cleanly with a linear history.
 
+Works great standalone. Works *especially* well with **Claude Code + tmux** — spin up a worktree per Claude task, keep each conversation isolated in its own branch and tmux session, finish or drop when done. See [tmux integration](#tmux-integration-optional) below.
+
 ```
 wt new "add dark mode toggle"     # create worktree + branch, cd into it
 wt finish                         # rebase + fast-forward + clean up
@@ -154,6 +156,31 @@ Scans for and interactively fixes:
 ## tmux integration (optional)
 
 `wt` works without tmux. When run inside a tmux session, cleanup commands (`wt finish`, `wt drop`) will additionally kill the tmux session named `<project>/<slug>` if it exists.
+
+### Claude Code + tmux workflow
+
+This is the sweet spot `wt` was designed for. With [tmux-sessionizer](https://github.com/ThePrimeagen/tmux-sessionizer) (or similar), each worktree becomes its own tmux session automatically:
+
+```bash
+# Start a Claude task in isolation
+wt new myapp "implement dark mode"
+# → creates myapp/.worktrees/implement-dark-mode/
+# → tmux-sessionizer picks it up as session "myapp/implement-dark-mode"
+# → run `claude` in that session — fully isolated branch
+
+# While Claude works, start another task in parallel
+wt new myapp "fix login redirect"
+# → separate worktree, separate branch, separate tmux session
+
+# Claude finishes dark mode → rebase + clean up
+cd myapp/.worktrees/implement-dark-mode
+wt finish   # rebases, fast-forwards, kills tmux session, cd's back
+
+# All tasks visible at a glance
+wt list
+```
+
+Each Claude Code conversation gets its own branch, its own working tree, and its own tmux session. No context bleeding between tasks.
 
 If you want `wt finish`/`wt drop` to check whether your editor is still running before proceeding, override the `claude_running_in_session` function. For example, if you use a tmux option `@is_editor_running` to track this:
 
