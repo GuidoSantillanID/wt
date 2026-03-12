@@ -330,7 +330,7 @@ Key settings:
 
 ### CLAUDE.md
 
-Config file: `~/.claude/CLAUDE.md` (see `config/claude/CLAUDE.md`)
+Config file: `~/.claude/CLAUDE.md`
 
 Global instructions applied to every Claude Code session. Covers:
 - Working relationship style (direct feedback, no timeline estimates)
