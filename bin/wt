@@ -8,9 +8,9 @@
 #
 # COMMANDS
 #   wt new [project] "<description>" [--no-claude]   Create a worktree with auto-named branch
-#   wt finish                          Rebase + fast-forward into base, clean up
+#   wt finish [--yes|-y]               Rebase + fast-forward into base, clean up
 #   wt sync                            Rebase onto latest base branch (from origin)
-#   wt drop                            Abandon worktree without merging, clean up
+#   wt drop [--yes|-y]                 Abandon worktree without merging, clean up
 #   wt list                            Show all worktrees across projects
 #   wt help                            Show this help
 #
@@ -191,9 +191,9 @@ wt — Git Worktree Lifecycle Tool
 
 USAGE
   wt new [project] "<description>" [--no-claude]   Create a worktree with auto-named branch
-  wt finish                                        Rebase onto base, fast-forward, clean up
+  wt finish [--yes|-y]                             Rebase onto base, fast-forward, clean up
   wt sync                                          Rebase onto latest base branch (from origin)
-  wt drop                                          Abandon worktree without merging, clean up
+  wt drop [--yes|-y]                               Abandon worktree without merging, clean up
   wt list                                          Show all active worktrees across projects
   wt doctor                                        Check for orphaned branches/dirs, fix interactively
   wt help                                          Show this help
@@ -226,6 +226,7 @@ NOTES
   • After `wt new`, your shell cd's into the new worktree and claude launches
   • Pass --no-claude to skip the automatic Claude launch
   • After `wt finish`, your shell cd's back to the main worktree
+  • Pass --yes / -y to wt finish or wt drop to skip confirmation prompts
   • Use `wt sync` to keep long-lived worktrees current with the base branch
   • Configure search paths: export WT_SEARCH_PATHS=~/src:~/projects
   • Or create ~/.config/wt/config with one directory per line
@@ -358,6 +359,11 @@ EOF
 
 # wt finish — rebase worktree onto base, fast-forward, clean up
 cmd_finish() {
+  local auto_yes=0
+  for arg in "$@"; do
+    case "$arg" in --yes|-y) auto_yes=1 ;; esac
+  done
+
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
     || error "Not inside a git repository"
@@ -394,12 +400,16 @@ cmd_finish() {
     session_name="${session_name//./_}"
     if tmux_session_exists "$session_name" && claude_running_in_session "$session_name"; then
       warn "Editor is still running in session '${session_name}'"
-      confirm "Proceed anyway?" || exit 0
+      if (( auto_yes == 0 )); then
+        confirm "Proceed anyway?" || exit 0
+      fi
     fi
   fi
 
-  confirm "Rebase ${BOLD}${branch}${RESET} onto ${BOLD}${base_branch}${RESET} and fast-forward?" \
-    || { info "Aborted."; exit 0; }
+  if (( auto_yes == 0 )); then
+    confirm "Rebase ${BOLD}${branch}${RESET} onto ${BOLD}${base_branch}${RESET} and fast-forward?" \
+      || { info "Aborted."; exit 0; }
+  fi
 
   local main_wt
   main_wt=$(get_main_worktree)
@@ -514,6 +524,11 @@ cmd_sync() {
 
 # wt drop — abandon worktree without merging
 cmd_drop() {
+  local auto_yes=0
+  for arg in "$@"; do
+    case "$arg" in --yes|-y) auto_yes=1 ;; esac
+  done
+
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
     || error "Not inside a git repository"
@@ -540,7 +555,9 @@ cmd_drop() {
   # Safety: uncommitted changes
   if [[ -n "$(git status --porcelain)" ]]; then
     warn "There are uncommitted changes in this worktree."
-    confirm "Drop anyway (changes will be lost)?" || exit 0
+    if (( auto_yes == 0 )); then
+      confirm "Drop anyway (changes will be lost)?" || exit 0
+    fi
   fi
 
   # Safety: editor still running (tmux only; override claude_running_in_session() to customize)
@@ -549,11 +566,15 @@ cmd_drop() {
     session_name="${session_name//./_}"
     if tmux_session_exists "$session_name" && claude_running_in_session "$session_name"; then
       warn "Editor is still running in session '${session_name}'"
-      confirm "Proceed anyway?" || exit 0
+      if (( auto_yes == 0 )); then
+        confirm "Proceed anyway?" || exit 0
+      fi
     fi
   fi
 
-  confirm "Drop ${BOLD}${branch}${RESET}? (no merge)" || { info "Aborted."; exit 0; }
+  if (( auto_yes == 0 )); then
+    confirm "Drop ${BOLD}${branch}${RESET}? (no merge)" || { info "Aborted."; exit 0; }
+  fi
 
   local main_wt
   main_wt=$(get_main_worktree)

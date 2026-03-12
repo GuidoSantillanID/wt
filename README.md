@@ -117,15 +117,17 @@ Creates a new git worktree with an auto-named branch.
 - If run from inside an existing worktree, creates from the main checkout
 - Detects package manager (pnpm/yarn/npm/uv/poetry/pip) and offers to install deps
 
-### `wt finish`
+### `wt finish [--yes|-y]`
 
 Integrates the worktree back into its base branch. Always produces a linear history — no merge commits.
 
+Pass `--yes` or `-y` to skip all confirmation prompts (useful when running from scripts or Claude Code).
+
 **Safety checks (in order):**
 1. Verifies you're in a worktree (not the main checkout) — errors if not
-2. Aborts if there are uncommitted changes (`git status` is dirty)
-3. Warns if an editor is still running in this worktree's tmux session (requires `claude_running_in_session()` override; no-op by default)
-4. Confirms: `Rebase wt/<slug> onto <base> and fast-forward? [y/N]`
+2. Aborts if there are uncommitted changes (`git status` is dirty) — **not** skipped by `--yes`
+3. Warns if an editor is still running in this worktree's tmux session (requires `claude_running_in_session()` override; no-op by default) — skipped by `--yes`
+4. Confirms: `Rebase wt/<slug> onto <base> and fast-forward? [y/N]` — skipped by `--yes`
 5. Fetches remote base branch (best-effort, ignores failure)
 6. Rebases worktree branch onto base — aborts and prints manual instructions if there are conflicts
 7. Fast-forwards base branch to the rebased tip
@@ -148,15 +150,17 @@ Rebases the current worktree branch onto the latest base branch from origin. Kee
 
 Unlike `wt finish`, sync does not merge into the base, remove the worktree, or change your working directory.
 
-### `wt drop`
+### `wt drop [--yes|-y]`
 
 Abandons a worktree without merging — for dead-end experiments.
 
+Pass `--yes` or `-y` to skip all confirmation prompts.
+
 **Safety checks (in order):**
 1. Verifies you're in a worktree
-2. Warns if there are uncommitted changes — asks to confirm before proceeding
-3. Warns if an editor is still running in this session (requires `claude_running_in_session()` override)
-4. Final confirmation: `Drop wt/<slug>? (no merge) [y/N]`
+2. Warns if there are uncommitted changes — asks to confirm before proceeding — skipped by `--yes`
+3. Warns if an editor is still running in this session (requires `claude_running_in_session()` override) — skipped by `--yes`
+4. Final confirmation: `Drop wt/<slug>? (no merge) [y/N]` — skipped by `--yes`
 
 **On success:**
 - Worktree directory removed

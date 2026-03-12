@@ -307,6 +307,70 @@ commit_log=$(git -C "$REPO" log --oneline -5)
 assert_contains     "fix commit landed on dev"   "fix sidebar overflow" "$commit_log"
 assert_not_contains "no merge commits"           "Merge" "$commit_log"
 
+# ── wt finish --yes ───────────────────────────────────────────────────────────
+section "wt finish --yes — skips confirmation (no stdin pipe)"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_PATH_FY="${REPO}/.worktrees/finish-yes-test"
+stdout_fy=$(wt new "finish yes test" 2>/dev/null)
+assert_eq "created finish-yes worktree" "$WT_PATH_FY" "$stdout_fy"
+echo "yes-work" > "${WT_PATH_FY}/yes-work.txt"
+git -C "$WT_PATH_FY" add yes-work.txt
+git -C "$WT_PATH_FY" commit -q -m "yes test commit"
+git -C "$REPO" checkout -q main
+cd "$WT_PATH_FY"
+_tmp_fy=$(mktemp)
+stdout_fin_yes=$(wt finish --yes 2>"$_tmp_fy")
+out_fin_yes=$(cat "$_tmp_fy"); rm -f "$_tmp_fy"
+assert_contains       "finish --yes reports success"  "Done!"  "$out_fin_yes"
+assert_eq             "stdout is main worktree path"  "$REPO"  "$stdout_fin_yes"
+assert_dir_not_exists "worktree removed"              "$WT_PATH_FY"
+branch_fy=$(git -C "$REPO" rev-parse --verify "wt/finish-yes-test" 2>/dev/null || echo "gone")
+assert_eq             "branch deleted"                "gone"   "$branch_fy"
+
+# ── wt drop --yes ─────────────────────────────────────────────────────────────
+section "wt drop --yes — clean worktree (no stdin pipe)"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_PATH_DY="${REPO}/.worktrees/drop-yes-test"
+stdout_dy=$(wt new "drop yes test" 2>/dev/null)
+assert_eq "created drop-yes worktree" "$WT_PATH_DY" "$stdout_dy"
+cd "$WT_PATH_DY"
+_tmp_dy=$(mktemp)
+stdout_drop_yes=$(wt drop --yes 2>"$_tmp_dy")
+out_drop_yes=$(cat "$_tmp_dy"); rm -f "$_tmp_dy"
+assert_contains       "drop --yes reports success"    "Dropped"  "$out_drop_yes"
+assert_eq             "stdout is main worktree path"  "$REPO"    "$stdout_drop_yes"
+assert_dir_not_exists "worktree removed"              "$WT_PATH_DY"
+branch_dy=$(git -C "$REPO" rev-parse --verify "wt/drop-yes-test" 2>/dev/null || echo "gone")
+assert_eq             "branch deleted"                "gone"     "$branch_dy"
+
+section "wt drop --yes — dirty worktree (skips both confirms)"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_PATH_DDY="${REPO}/.worktrees/drop-dirty-yes-test"
+stdout_ddy=$(wt new "drop dirty yes test" 2>/dev/null)
+assert_eq "created drop-dirty-yes worktree" "$WT_PATH_DDY" "$stdout_ddy"
+echo "uncommitted" > "${WT_PATH_DDY}/dirty-yes.txt"
+cd "$WT_PATH_DDY"
+_tmp_ddy=$(mktemp)
+stdout_ddy_out=$(wt drop --yes 2>"$_tmp_ddy")
+out_ddy=$(cat "$_tmp_ddy"); rm -f "$_tmp_ddy"
+assert_contains       "drop --yes dirty reports success"  "Dropped"  "$out_ddy"
+assert_dir_not_exists "dirty worktree removed"            "$WT_PATH_DDY"
+
+section "wt drop -y — short flag works"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_PATH_SY="${REPO}/.worktrees/short-yes-test"
+stdout_sy=$(wt new "short yes test" 2>/dev/null)
+assert_eq "created short-yes worktree" "$WT_PATH_SY" "$stdout_sy"
+cd "$WT_PATH_SY"
+_tmp_sy=$(mktemp)
+stdout_sy_drop=$(wt drop -y 2>"$_tmp_sy"); rm -f "$_tmp_sy"
+assert_eq             "stdout is main worktree path"  "$REPO"  "$stdout_sy_drop"
+assert_dir_not_exists "worktree removed"              "$WT_PATH_SY"
+
 # ── wt sync ───────────────────────────────────────────────────────────────────
 section "wt sync — error from main checkout"
 cd "$REPO"

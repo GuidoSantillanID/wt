@@ -165,15 +165,15 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 14. Print worktree_path to stdout (shell wrapper uses this to cd)
 ```
 
-### `wt finish`
+### `wt finish [--yes|-y]`
 
 ```
 1. git rev-parse --show-toplevel → repo_root
 2. Verify: repo_root/.git is a FILE (not a dir) → you're in a worktree; dir → error "main checkout"
 3. Read .wt-meta: base_branch, branch, description, project, project_root, slug
-4. Validate: no uncommitted changes (git status --porcelain)
-5. [if TMUX] Check claude_running_in_session (stubbed to false by default) → warn + confirm
-6. Confirm: "Rebase <branch> onto <base_branch> and fast-forward?"
+4. Validate: no uncommitted changes (git status --porcelain)  ← not skipped by --yes
+5. [if TMUX] Check claude_running_in_session (stubbed to false by default) → warn + confirm  ← skipped by --yes
+6. Confirm: "Rebase <branch> onto <base_branch> and fast-forward?"  ← skipped by --yes
 7. get_main_worktree()
 8. git fetch origin <base_branch> (best-effort, ignore failure)
 9. git rebase <base_branch>  (in repo_root context)
@@ -204,13 +204,13 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 
 Key difference from `wt finish`: rebases onto `origin/<base_branch>` (not local), no confirmation, no fast-forward, no cleanup, no cd.
 
-### `wt drop`
+### `wt drop [--yes|-y]`
 
 ```
 1-3. Same as finish (verify worktree, read meta, validate slug/branch)
-4. [if dirty] warn + confirm "drop anyway?"
-5. [if TMUX] claude_running_in_session check
-6. Confirm: "Drop <branch>? (no merge)"
+4. [if dirty] warn + confirm "drop anyway?"  ← skipped by --yes
+5. [if TMUX] claude_running_in_session check  ← skipped by --yes
+6. Confirm: "Drop <branch>? (no merge)"  ← skipped by --yes
 7. get_main_worktree()
 8. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true)
 9. Print main_wt to stdout
@@ -500,6 +500,14 @@ Extracted `wt` into a standalone public GitHub repo. Goal: anyone can clone and 
       .github/workflows/test.yml
     ```
 
+### v9: `--yes`/`-y` flag for `wt finish` and `wt drop` (2026-03-12)
+
+**Problem:** `confirm()` calls `read -r response` from stdin. Claude Code's Bash tool has no interactive stdin — `read` gets EOF, confirmation always fails, `wt finish`/`wt drop` always abort.
+
+**Fix:** Add `--yes`/`-y` flag to both commands. When set, all `confirm()` calls are bypassed. The dirty-file check in `cmd_finish` is `error()` not `confirm()`, so it is intentionally **not** skipped — never auto-merge dirty work. The dirty-file check in `cmd_drop` **is** skipped — deliberately dropping dirty work is the point of `--yes` on drop.
+
+33. **`wt finish --yes` / `wt drop --yes`** — Non-interactive flag skips confirmation prompts. Local `auto_yes=0` variable parsed at top of each function; `confirm()` calls wrapped in `if (( auto_yes == 0 ))`. Tests expanded from 79 → 95.
+
 ---
 
 ## Porting guide
@@ -573,6 +581,10 @@ The bash `wt-test` has 71 tests as of v8. Each maps to a unit/integration test i
 | wt drop — clean | single confirm, stdout=main_wt |
 | wt finish — rebase + ff | rebase + fast-forward happy path |
 | wt finish — diverged base | rebase handles base drift, linear history |
+| wt finish --yes | skips confirmation, no stdin pipe |
+| wt drop --yes | clean worktree, no stdin pipe |
+| wt drop --yes (dirty) | skips dirty + main confirms |
+| wt drop -y | short flag works |
 | wt list — empty | "No active worktrees" message |
 | wt doctor — clean | "all good" |
 | wt doctor — orphaned branch | detect + fix |
