@@ -409,17 +409,13 @@ cd ~/Documents/dev/wt
 ./install.sh
 ```
 
-### 2. Install full workflow config
+### 2. Install workflow config
 
-```bash
-./install.sh --config
-```
+Copy the files from `config/` to their destinations — see `config/README.md` for the full mapping.
 
-This copies all configs to their destinations (backs up existing files as `*.bak` first) and prints instructions for the shell functions.
+Edit `~/.local/bin/tmux-sessionizer` lines 8–9 to set your local project directories.
 
 ### 3. Install tmux dependencies manually
-
-After `install.sh --config`:
 
 ```bash
 # TPM (tmux plugin manager)

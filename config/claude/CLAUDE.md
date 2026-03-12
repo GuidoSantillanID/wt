@@ -43,6 +43,16 @@ Examples:
 
 Never use `${ENV_VAR}` substitution in a committed `.npmrc` for auth tokens. pnpm warns on every invocation when the var is unset — including non-install commands like `typecheck` and `lint` — and env propagation through turbo/monorepo child processes is unreliable. Instead: have CI append the auth line at runtime (e.g. `echo '//registry/:_authToken=...' >> .npmrc`); have local devs configure once via `pnpm config set //registry/:_authToken <token>` (writes to `~/.npmrc`).
 
+## wt worktrees
+
+When `.wt-meta` is present in the repo root, this is a worktree managed by the `wt` CLI. For branch completion and cleanup, use the `wt` commands — don't do manual git operations:
+
+- `wt finish` — rebase onto base branch, fast-forward, remove worktree + branch
+- `wt drop` — abandon worktree without merging, remove worktree + branch
+- `wt sync` — rebase onto latest base branch from origin
+
+These handle worktree-specific edge cases (base branch checked out elsewhere, CWD cleanup) that manual git commands will break on.
+
 ## TypeScript
 
 - Never add ambient type declarations (`declare module "*.png"`, etc.) that the framework already provides (e.g., Next.js via `next-env.d.ts`). Duplicate ambient declarations cause non-deterministic errors across OS filesystems (macOS vs Linux process files in different order).

@@ -494,7 +494,7 @@ Extracted `wt` into a standalone public GitHub repo. Goal: anyone can clone and 
     wt/
       bin/wt              # the tool
       bin/wt-test         # test suite
-      install.sh          # copies bin/wt to ~/.local/bin/wt
+      install.sh          # symlinks bin/wt to ~/.local/bin/wt
       README.md
       LICENSE             # MIT
       .github/workflows/test.yml

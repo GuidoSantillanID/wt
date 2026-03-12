@@ -22,7 +22,7 @@ cd wt
 ./install.sh
 ```
 
-This copies `bin/wt` to `~/.local/bin/wt`. Make sure `~/.local/bin` is on your `PATH`.
+This symlinks `bin/wt` to `~/.local/bin/wt`. Make sure `~/.local/bin` is on your `PATH`.
 
 ### Shell wrapper
 
@@ -290,6 +290,4 @@ Tests create a real git repo in `/tmp`, run all commands against it, and clean u
 
 `wt` works standalone, but it was built for a Ghostty + tmux + Claude Code workflow. The `config/` directory in this repo contains the full stack config (Ghostty, tmux, Claude Code hooks, ccline status line, shell wrappers). `docs/SETUP.md` explains how the pieces connect and has step-by-step installation instructions.
 
-```bash
-./install.sh --config   # install the full workflow config
-```
+See `docs/SETUP.md` for step-by-step setup. To back up your local configs to this repo, run `./update-config.sh`.

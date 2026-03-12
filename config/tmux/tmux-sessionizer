@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-#
-# tmux-sessionizer — fuzzy project/worktree session picker
-#
-# CUSTOMIZE: Edit the paths below to match where your projects live.
-# The worktrees find uses the same roots, looking 3 levels deep for .worktrees/ dirs.
 
 # Top-level projects + worktrees inside each project
 projects=$(find ~/Documents/dev ~/Documents/lab -mindepth 1 -maxdepth 1 -type d)
@@ -15,7 +10,7 @@ if [[ -z "$selected" ]]; then
   exit 0
 fi
 
-# For worktrees, prefix session name with parent project: my-app/feat-x
+# For worktrees, prefix session name with parent project: instadeep-ui/feat-x
 parent=$(basename "$(dirname "$(dirname "$selected")")")
 base=$(basename "$selected")
 dir=$(basename "$(dirname "$selected")")
