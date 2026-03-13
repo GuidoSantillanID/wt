@@ -736,6 +736,10 @@ cmd_pr() {
     return 0
   fi
 
+  local pr_body
+  pr_body=$(git log --oneline --reverse "${rebase_target}..HEAD" 2>/dev/null \
+    | sed 's/^/- /' || echo "")
+
   if (( auto_yes == 0 )); then
     confirm "Open PR: '${description}' → ${base_branch}?" \
       || { info "Aborted."; exit 0; }
@@ -745,7 +749,7 @@ cmd_pr() {
   pr_url=$(gh pr create \
     --base "$base_branch" \
     --title "$description" \
-    --body "" \
+    --body "$pr_body" \
     ${draft_flag:+"$draft_flag"} 2>/dev/null) \
     || error "Failed to create PR. Check 'gh auth status'."
 

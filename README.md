@@ -194,8 +194,9 @@ Pushes the worktree branch and opens a GitHub PR. Requires the [GitHub CLI](http
 4. Fetches and rebases onto `origin/<base_branch>` (same as `wt sync`) — pauses on conflicts
 5. Pushes to origin with `--force-with-lease` (needed after rebase rewrites history)
 6. If a PR already exists for this branch, prints the URL and returns
-7. Confirms PR creation, then runs `gh pr create` targeting the base branch
-8. Prints the PR URL to stdout (pipeable)
+7. Auto-generates the PR body from commits on the branch (`git log --oneline` as a bullet list)
+8. Confirms PR creation, then runs `gh pr create` targeting the base branch
+9. Prints the PR URL to stdout (pipeable)
 
 Pass `--draft` to create a draft PR. Pass `--yes`/`-y` to skip all confirmation prompts.
 

@@ -691,6 +691,7 @@ gh_log=$(cat "${MOCK_BIN}/gh-calls.log" 2>/dev/null || echo "")
 assert_contains "gh pr create called"  "pr create"           "$gh_log"
 assert_contains "base branch passed"   "--base dev"          "$gh_log"
 assert_contains "title passed"         "--title pr test"     "$gh_log"
+assert_contains "body from commits"    "pr test commit"      "$gh_log"
 
 section "wt pr --draft — passes draft flag to gh"
 rm -f "${MOCK_BIN}/gh-calls.log"
