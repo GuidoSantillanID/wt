@@ -85,7 +85,7 @@ mkdir -p "$test_base"
 # Create test git repo inside test_base
 REPO="${test_base}/test-project"
 mkdir -p "$REPO"
-git -C "$REPO" init -q
+git -C "$REPO" init -q -b main
 git -C "$REPO" config user.email "test@test.com"
 git -C "$REPO" config user.name "Test"
 echo "hello" > "$REPO/README.md"
@@ -735,7 +735,10 @@ echo "work" > "${WT_PATH_PR}/work.txt"
 git -C "$WT_PATH_PR" add work.txt
 git -C "$WT_PATH_PR" commit -q -m "pr test commit"
 cd "$WT_PATH_PR"
-out=$(PATH="/usr/bin:/bin" WT_SEARCH_PATHS="$test_base" bash "$WT" pr 2>&1 || true)
+_gh_env=$(mktemp)
+printf 'command() { [[ "$1 $2" == "-v gh" ]] && return 1; builtin command "$@"; }\n' > "$_gh_env"
+out=$(BASH_ENV="$_gh_env" WT_SEARCH_PATHS="$test_base" bash "$WT" pr 2>&1 || true)
+rm -f "$_gh_env"
 assert_contains "errors without gh" "gh CLI required" "$out"
 
 section "wt pr — blocks on dirty worktree"
