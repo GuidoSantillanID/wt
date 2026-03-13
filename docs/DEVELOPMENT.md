@@ -597,8 +597,6 @@ The bash `wt-test` has 71 tests as of v8. Each maps to a unit/integration test i
 
 ## Future ideas
 
-- **`wt pr`**: push and open a PR instead of direct merge (via `gh pr create`)
-- **`wt status`**: show current worktree info (branch, base, commits ahead, age) when inside one
 - **`wt log`**: history of finished/dropped worktrees (currently no persistent log)
 - **Per-project config** (`~/.config/wt/config`): default merge target, branch prefix, auto-tmux flag
 - **Shell completions**: `wt new <TAB>` lists projects from search paths

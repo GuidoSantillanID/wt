@@ -592,6 +592,192 @@ git -C "$REPO" worktree remove "${WT_FB}" --force 2>/dev/null || true
 git -C "$REPO" branch -D "wt/flag-pos-between" 2>/dev/null || true
 rm -rf "${REPO}/node_modules"
 
+# ─── wt status ───────────────────────────────────────────────────────────────
+
+section "wt status — error when run from main checkout"
+cd "$REPO"
+out=$(wt status 2>&1 || true)
+assert_contains "errors when not in a worktree" "main checkout" "$out"
+
+section "wt status — shows worktree info"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_PATH_ST="${REPO}/.worktrees/status-test"
+wt new "status test" 2>/dev/null
+echo "work" > "${WT_PATH_ST}/work.txt"
+git -C "$WT_PATH_ST" add work.txt
+git -C "$WT_PATH_ST" commit -q -m "status test commit"
+cd "$WT_PATH_ST"
+out=$(wt status 2>&1)
+assert_contains "shows branch"        "wt/status-test" "$out"
+assert_contains "shows description"   "status test"    "$out"
+assert_contains "shows base branch"   "dev"            "$out"
+assert_contains "shows ahead count"   "1 ahead"        "$out"
+assert_contains "shows clean status"  "clean"          "$out"
+
+section "wt status — shows dirty count"
+cd "$WT_PATH_ST"
+echo "dirty" > "${WT_PATH_ST}/dirty.txt"
+out=$(wt status 2>&1)
+assert_contains "shows dirty count" "dirty" "$out"
+rm "${WT_PATH_ST}/dirty.txt"
+
+section "wt status — no stdout output"
+cd "$WT_PATH_ST"
+stdout_st=$(wt status 2>/dev/null)
+assert_eq "no stdout from status" "" "$stdout_st"
+
+git -C "$REPO" worktree remove "$WT_PATH_ST" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/status-test" 2>/dev/null || true
+
+# ─── wt pr ───────────────────────────────────────────────────────────────────
+
+section "wt pr — error when run from main checkout"
+cd "$REPO"
+out=$(wt pr 2>&1 || true)
+assert_contains "errors when not in a worktree" "main checkout" "$out"
+
+section "wt pr — error when gh not installed"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_PATH_PR="${REPO}/.worktrees/pr-test"
+wt new "pr test" 2>/dev/null
+echo "work" > "${WT_PATH_PR}/work.txt"
+git -C "$WT_PATH_PR" add work.txt
+git -C "$WT_PATH_PR" commit -q -m "pr test commit"
+cd "$WT_PATH_PR"
+out=$(PATH="/usr/bin:/bin" WT_SEARCH_PATHS="$test_base" bash "$WT" pr 2>&1 || true)
+assert_contains "errors without gh" "gh CLI required" "$out"
+
+section "wt pr — blocks on dirty worktree"
+cd "$WT_PATH_PR"
+echo "dirty" > dirty-pr.txt
+out=$(wt pr 2>&1 || true)
+assert_contains "blocks on uncommitted changes" "Uncommitted changes" "$out"
+rm dirty-pr.txt
+
+section "wt pr — unknown flag error"
+cd "$WT_PATH_PR"
+out=$(wt pr --foo 2>&1 || true)
+assert_contains "unknown flag error" "Unknown flag" "$out"
+
+section "wt pr — creates PR with mock gh and bare remote"
+MOCK_BIN="${TMPROOT}/mock-bin"
+mkdir -p "$MOCK_BIN"
+cat > "${MOCK_BIN}/gh" << 'MOCKEOF'
+#!/usr/bin/env bash
+echo "$@" >> "${MOCK_BIN}/gh-calls.log"
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  exit 1
+elif [[ "$1" == "pr" && "$2" == "create" ]]; then
+  echo "https://github.com/test/test/pull/42"
+fi
+MOCKEOF
+# Fix: MOCK_BIN variable isn't expanded in heredoc — embed path explicitly
+sed -i.bak "s|\${MOCK_BIN}|${MOCK_BIN}|g" "${MOCK_BIN}/gh" && rm "${MOCK_BIN}/gh.bak"
+chmod +x "${MOCK_BIN}/gh"
+
+BARE="${TMPROOT}/bare-remote.git"
+git -C "$REPO" clone --bare . "$BARE" 2>/dev/null
+git -C "$WT_PATH_PR" remote add origin "$BARE"
+
+cd "$WT_PATH_PR"
+_tmp_pr=$(mktemp)
+stdout_pr=$(PATH="${MOCK_BIN}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" pr --yes 2>"$_tmp_pr")
+out_pr=$(cat "$_tmp_pr"); rm -f "$_tmp_pr"
+assert_contains "PR URL on stdout"   "https://github.com"  "$stdout_pr"
+assert_contains "reports PR created" "PR created"          "$out_pr"
+gh_log=$(cat "${MOCK_BIN}/gh-calls.log" 2>/dev/null || echo "")
+assert_contains "gh pr create called"  "pr create"           "$gh_log"
+assert_contains "base branch passed"   "--base dev"          "$gh_log"
+assert_contains "title passed"         "--title pr test"     "$gh_log"
+
+section "wt pr --draft — passes draft flag to gh"
+rm -f "${MOCK_BIN}/gh-calls.log"
+cd "$WT_PATH_PR"
+PATH="${MOCK_BIN}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" pr --draft --yes 2>/dev/null || true
+gh_log=$(cat "${MOCK_BIN}/gh-calls.log" 2>/dev/null || echo "")
+assert_contains "draft flag passed" "--draft" "$gh_log"
+
+section "wt pr — existing PR detected"
+cat > "${MOCK_BIN}/gh" << 'MOCKEOF2'
+#!/usr/bin/env bash
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  echo "https://github.com/test/test/pull/42"
+fi
+MOCKEOF2
+chmod +x "${MOCK_BIN}/gh"
+cd "$WT_PATH_PR"
+_tmp_pr2=$(mktemp)
+stdout_pr2=$(PATH="${MOCK_BIN}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" pr --yes 2>"$_tmp_pr2")
+out_pr2=$(cat "$_tmp_pr2"); rm -f "$_tmp_pr2"
+assert_contains "shows existing PR URL" "https://github.com" "$stdout_pr2"
+assert_contains "reports already exists" "already exists"    "$out_pr2"
+
+git -C "$REPO" worktree remove "$WT_PATH_PR" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/pr-test" 2>/dev/null || true
+rm -rf "$MOCK_BIN" "$BARE"
+
+# ─── wt pr — base branch selection ───────────────────────────────────────────
+
+section "wt pr — change base branch interactively"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+# Create extra branches on origin so the list is non-empty
+BARE2="${TMPROOT}/bare-remote2.git"
+git -C "$REPO" clone --bare . "$BARE2" 2>/dev/null
+# Add a second branch to the bare remote
+git -C "$REPO" push "$BARE2" dev:feature-x 2>/dev/null || true
+
+WT_PATH_BASE="${REPO}/.worktrees/base-change-test"
+wt new "base change test" 2>/dev/null
+echo "work" > "${WT_PATH_BASE}/work.txt"
+git -C "$WT_PATH_BASE" add work.txt
+git -C "$WT_PATH_BASE" commit -q -m "base change test commit"
+git -C "$WT_PATH_BASE" remote set-url origin "$BARE2"
+git -C "$WT_PATH_BASE" fetch origin 2>/dev/null
+
+MOCK_BIN2="${TMPROOT}/mock-bin2"
+mkdir -p "$MOCK_BIN2"
+cat > "${MOCK_BIN2}/gh" << 'MOCKEOF3'
+#!/usr/bin/env bash
+echo "$@" >> "${MOCK_BIN2_PATH}/gh-calls.log"
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  exit 1
+elif [[ "$1" == "pr" && "$2" == "create" ]]; then
+  echo "https://github.com/test/test/pull/99"
+fi
+MOCKEOF3
+sed -i.bak "s|\${MOCK_BIN2_PATH}|${MOCK_BIN2}|g" "${MOCK_BIN2}/gh" && rm "${MOCK_BIN2}/gh.bak"
+chmod +x "${MOCK_BIN2}/gh"
+
+cd "$WT_PATH_BASE"
+# Input: "y" to change base, then pick "2" (feature-x, sorted after dev), then "y" to confirm PR
+_tmp_base=$(mktemp)
+stdout_base=$(printf 'y\n2\ny\n' | PATH="${MOCK_BIN2}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" pr 2>"$_tmp_base" || true)
+out_base=$(cat "$_tmp_base"); rm -f "$_tmp_base"
+gh_log2=$(cat "${MOCK_BIN2}/gh-calls.log" 2>/dev/null || echo "")
+assert_contains "base changed in gh call"  "--base feature-x"   "$gh_log2"
+# Verify .wt-meta was updated
+meta_val=$(grep "^base_branch=" "${WT_PATH_BASE}/.wt-meta" | cut -d= -f2)
+assert_eq "wt-meta updated with new base" "feature-x" "$meta_val"
+
+section "wt pr --yes — skips base branch prompt"
+rm -f "${MOCK_BIN2}/gh-calls.log"
+cd "$WT_PATH_BASE"
+# Reset .wt-meta base back to dev
+sed -i.bak "s/^base_branch=.*/base_branch=dev/" "${WT_PATH_BASE}/.wt-meta" && rm -f "${WT_PATH_BASE}/.wt-meta.bak"
+_tmp_yes=$(mktemp)
+PATH="${MOCK_BIN2}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" pr --yes 2>"$_tmp_yes" || true
+out_yes=$(cat "$_tmp_yes"); rm -f "$_tmp_yes"
+assert_not_contains "no change-base prompt with --yes" "change?" "$out_yes"
+gh_log3=$(cat "${MOCK_BIN2}/gh-calls.log" 2>/dev/null || echo "")
+assert_contains "uses original base with --yes" "--base dev" "$gh_log3"
+
+git -C "$REPO" worktree remove "$WT_PATH_BASE" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/base-change-test" 2>/dev/null || true
+rm -rf "$MOCK_BIN2" "$BARE2"
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 echo ""

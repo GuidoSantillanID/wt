@@ -11,6 +11,8 @@ wt new "add dark mode toggle"     # create worktree + branch, cd into it
 wt finish                         # rebase + fast-forward + clean up
 wt sync                           # rebase onto latest base (keep it current)
 wt drop                           # abandon without merging
+wt pr                             # push branch + open GitHub PR
+wt status                         # show current worktree info
 wt list                           # show all active worktrees
 ```
 
@@ -96,6 +98,15 @@ wt sync
 # Abandon work without merging
 wt drop
 
+# Push branch and open a GitHub PR (requires gh CLI)
+wt pr
+
+# Open a draft PR
+wt pr --draft
+
+# Show current worktree info (branch, base, ahead, age)
+wt status
+
 # Diagnose and fix orphaned branches/dirs
 wt doctor
 ```
@@ -171,6 +182,30 @@ Pass `--yes` or `-y` to skip all confirmation prompts.
 - Branch force-deleted (`git branch -D` — the branch was never merged)
 - Tmux session killed
 - `cd`s back to main checkout (via shell wrapper)
+
+### `wt pr [--draft] [--yes|-y]`
+
+Pushes the worktree branch and opens a GitHub PR. Requires the [GitHub CLI](https://cli.github.com).
+
+**Steps:**
+1. Verifies you're in a worktree — errors if not
+2. Aborts if there are uncommitted changes
+3. Prompts to confirm or change the base branch (skipped with `--yes`). If changed, updates `.wt-meta` so future `wt pr`/`wt sync`/`wt finish` use the new base.
+4. Fetches and rebases onto `origin/<base_branch>` (same as `wt sync`) — pauses on conflicts
+5. Pushes to origin with `--force-with-lease` (needed after rebase rewrites history)
+6. If a PR already exists for this branch, prints the URL and returns
+7. Confirms PR creation, then runs `gh pr create` targeting the base branch
+8. Prints the PR URL to stdout (pipeable)
+
+Pass `--draft` to create a draft PR. Pass `--yes`/`-y` to skip all confirmation prompts.
+
+The worktree stays alive after `wt pr` — keep pushing updates. Use `wt finish` or `wt drop` when the PR is merged or abandoned.
+
+### `wt status`
+
+Shows info about the current worktree: branch, base branch, description, commits ahead, working tree status, and age. If `gh` is installed and the repo has a GitHub remote, also shows the PR URL if one is open.
+
+All output goes to stderr. No flags needed.
 
 ### `wt list`
 

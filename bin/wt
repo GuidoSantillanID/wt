@@ -11,6 +11,8 @@
 #   wt finish [--yes|-y]               Rebase + fast-forward into base, clean up
 #   wt sync                            Rebase onto latest base branch (from origin)
 #   wt drop [--yes|-y]                 Abandon worktree without merging, clean up
+#   wt pr [--draft] [--yes|-y]         Push branch and open a GitHub PR (requires gh)
+#   wt status                          Show current worktree info
 #   wt list                            Show all worktrees across projects
 #   wt help                            Show this help
 #
@@ -194,6 +196,8 @@ USAGE
   wt finish [--yes|-y]                             Rebase onto base, fast-forward, clean up
   wt sync                                          Rebase onto latest base branch (from origin)
   wt drop [--yes|-y]                               Abandon worktree without merging, clean up
+  wt pr [--draft] [--yes|-y]                       Push branch and open a GitHub PR (requires gh)
+  wt status                                        Show current worktree info
   wt list                                          Show all active worktrees across projects
   wt doctor                                        Check for orphaned branches/dirs, fix interactively
   wt help                                          Show this help
@@ -217,6 +221,15 @@ EXAMPLES
   # Abandon a dead-end worktree without merging:
   wt drop
 
+  # Push and open a GitHub PR (from inside a worktree):
+  wt pr
+
+  # Open a draft PR:
+  wt pr --draft
+
+  # Show current worktree info:
+  wt status
+
   # List all active worktrees:
   wt list
 
@@ -225,8 +238,10 @@ NOTES
   • Branch names: wt/<slug> (auto-generated from your description)
   • After `wt new`, your shell cd's into the new worktree
   • After `wt finish`, your shell cd's back to the main worktree
-  • Pass --yes / -y to wt finish or wt drop to skip confirmation prompts
+  • Pass --yes / -y to wt finish, wt drop, or wt pr to skip confirmation prompts
   • Use `wt sync` to keep long-lived worktrees current with the base branch
+  • `wt pr` requires the GitHub CLI (gh) — https://cli.github.com
+  • `wt pr` rebases before pushing (same as wt sync); worktree stays alive after
   • Configure search paths: export WT_SEARCH_PATHS=~/src:~/projects
   • Or create ~/.config/wt/config with one directory per line
 HELP
@@ -611,6 +626,180 @@ cmd_drop() {
   echo "$main_wt"
 }
 
+cmd_pr() {
+  local auto_yes=0 draft_flag=""
+  for arg in "$@"; do
+    case "$arg" in
+      --yes|-y) auto_yes=1 ;;
+      --draft)  draft_flag="--draft" ;;
+      *)        error "Unknown flag: '$arg'. Usage: wt pr [--draft] [--yes|-y]" ;;
+    esac
+  done
+
+  command -v gh &>/dev/null \
+    || error "gh CLI required for 'wt pr'. Install: https://cli.github.com"
+
+  local repo_root
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+    || error "Not inside a git repository"
+
+  [[ -d "${repo_root}/.git" ]] \
+    && error "You are in the main checkout, not a worktree."
+
+  local meta_file="${repo_root}/${META_FILE}"
+  [[ -f "$meta_file" ]] \
+    || error "No ${META_FILE} found. Was this worktree created with 'wt new'?"
+
+  local base_branch description branch
+  base_branch=$(read_meta "$meta_file" "base_branch")
+  description=$(read_meta "$meta_file" "description")
+  branch=$(read_meta "$meta_file" "branch")
+
+  [[ -z "$base_branch" || -z "$branch" ]] \
+    && error "Corrupt .wt-meta — missing required fields"
+
+  info "Worktree: ${BOLD}${branch}${RESET}"
+  info "Description: ${description}"
+  info "Base branch: ${BOLD}${base_branch}${RESET}"
+
+  if (( auto_yes == 0 )); then
+    if confirm "Base branch: ${BOLD}${base_branch}${RESET} — change?"; then
+      local branches=()
+      while IFS= read -r b; do
+        branches+=("$b")
+      done < <(
+        git branch -r --list 'origin/*' 2>/dev/null \
+          | sed -e 's/^[[:space:]]*//' -e '/HEAD/d' -e 's|^origin/||' \
+          | grep -v "^${branch}$" \
+          | sort
+      )
+
+      if (( ${#branches[@]} == 0 )); then
+        warn "No remote branches found. Keeping ${base_branch}."
+      else
+        echo -e "  Pick a base branch:" >&2
+        local i
+        for i in "${!branches[@]}"; do
+          echo -e "    $((i+1))) ${branches[$i]}" >&2
+        done
+        local choice
+        echo -en "  ${BOLD}Enter number [1-${#branches[@]}]:${RESET} " >&2
+        read -r choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#branches[@]} )); then
+          base_branch="${branches[$((choice-1))]}"
+          sed -i.bak "s/^base_branch=.*/base_branch=${base_branch}/" "$meta_file" && rm -f "${meta_file}.bak"
+          success "Base branch changed to ${base_branch}"
+        else
+          warn "Invalid choice. Keeping ${base_branch}."
+        fi
+      fi
+    fi
+  fi
+
+  [[ -n "$(git status --porcelain)" ]] \
+    && error "Uncommitted changes present. Commit or stash before 'wt pr'."
+
+  git remote get-url origin &>/dev/null \
+    || error "No 'origin' remote configured. 'wt pr' requires a remote to push to."
+
+  info "Fetching ${base_branch} from origin..."
+  git fetch origin "${base_branch}" >&2 2>/dev/null \
+    || warn "Could not fetch origin/${base_branch} — will rebase onto local ref"
+
+  local rebase_target="origin/${base_branch}"
+  if ! git rev-parse --verify "${rebase_target}" &>/dev/null; then
+    rebase_target="${base_branch}"
+    warn "No remote-tracking branch for ${base_branch} — using local ref"
+  fi
+
+  info "Rebasing onto ${rebase_target}..."
+  local rebase_err
+  if ! rebase_err=$(git rebase "${rebase_target}" 2>&1); then
+    warn "Rebase paused — conflicts detected."
+    echo -e "  Fix conflicts, then:  git add <files> && git rebase --continue" >&2
+    echo -e "  To abort:             git rebase --abort && git checkout ${branch}" >&2
+    exit 1
+  fi
+  success "Rebased onto ${rebase_target}"
+
+  info "Pushing ${branch} to origin..."
+  git push --force-with-lease origin "${branch}" >&2 \
+    || error "Push failed. Check your remote access."
+  success "Pushed ${branch}"
+
+  local existing_pr
+  existing_pr=$(gh pr view --json url --jq '.url' 2>/dev/null || echo "")
+  if [[ -n "$existing_pr" ]]; then
+    success "PR already exists — pushed latest changes"
+    info "URL: ${existing_pr}"
+    echo "$existing_pr"
+    return 0
+  fi
+
+  if (( auto_yes == 0 )); then
+    confirm "Open PR: '${description}' → ${base_branch}?" \
+      || { info "Aborted."; exit 0; }
+  fi
+
+  local pr_url
+  pr_url=$(gh pr create \
+    --base "$base_branch" \
+    --title "$description" \
+    --body "" \
+    ${draft_flag:+"$draft_flag"} 2>/dev/null) \
+    || error "Failed to create PR. Check 'gh auth status'."
+
+  success "PR created"
+  info "URL: ${pr_url}"
+  echo "$pr_url"
+}
+
+cmd_status() {
+  local repo_root
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+    || error "Not inside a git repository"
+
+  [[ -d "${repo_root}/.git" ]] \
+    && error "You are in the main checkout, not a worktree."
+
+  local meta_file="${repo_root}/${META_FILE}"
+  [[ -f "$meta_file" ]] \
+    || error "No ${META_FILE} found. Was this worktree created with 'wt new'?"
+
+  local base_branch description branch created
+  base_branch=$(read_meta "$meta_file" "base_branch")
+  description=$(read_meta "$meta_file" "description")
+  branch=$(read_meta "$meta_file" "branch")
+  created=$(read_meta "$meta_file" "created")
+
+  [[ -z "$base_branch" || -z "$branch" ]] \
+    && error "Corrupt .wt-meta — missing required fields"
+
+  local dirty_count ahead age
+  dirty_count=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  ahead=$(git rev-list --count "${base_branch}..HEAD" 2>/dev/null || echo 0)
+  age="?"
+  [[ -n "$created" ]] && age=$(human_age "$created")
+
+  echo -e "${BOLD}${branch}${RESET}" >&2
+  echo -e "  Description:  ${description}" >&2
+  echo -e "  Base branch:  ${base_branch}" >&2
+  echo -e "  Commits:      ${ahead} ahead" >&2
+  if (( dirty_count > 0 )); then
+    echo -e "  Working tree: ${YELLOW}${dirty_count} dirty${RESET}" >&2
+  else
+    echo -e "  Working tree: ${GREEN}clean${RESET}" >&2
+  fi
+  echo -e "  Age:          ${age}" >&2
+
+  if command -v gh &>/dev/null \
+      && git remote -v 2>/dev/null | grep -q 'github\.com'; then
+    local pr_url
+    pr_url=$(gh pr view --json url --jq '.url' 2>/dev/null || echo "")
+    [[ -n "$pr_url" ]] && echo -e "  PR:           ${pr_url}" >&2
+  fi
+}
+
 # Shared cleanup: remove worktree dir, delete branch, kill tmux session
 # Args: repo_root branch main_wt project slug [force]
 _cleanup_worktree() {
@@ -876,6 +1065,8 @@ main() {
     finish|done)    cmd_finish "$@" ;;
     sync)           cmd_sync "$@" ;;
     drop)           cmd_drop "$@" ;;
+    pr)             cmd_pr "$@" ;;
+    status|st)      cmd_status "$@" ;;
     list|ls)        cmd_list "$@" ;;
     doctor)         cmd_doctor "$@" ;;
     help|-h|--help) cmd_help ;;
