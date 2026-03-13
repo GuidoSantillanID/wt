@@ -142,13 +142,17 @@ Pass `--yes` or `-y` to skip all confirmation prompts (useful when running from 
 1. Verifies you're in a worktree (not the main checkout) — errors if not
 2. Aborts if there are uncommitted changes (`git status` is dirty) — **not** skipped by `--yes`
 3. Warns if an editor is still running in this worktree's tmux session (requires `claude_running_in_session()` override; no-op by default) — skipped by `--yes`
-4. Confirms: `Rebase wt/<slug> onto <base> and fast-forward? [y/N]` — skipped by `--yes`
-5. Fetches remote base branch (best-effort, ignores failure)
-6. Rebases worktree branch onto base — aborts and prints manual instructions if there are conflicts
-7. Fast-forwards base branch to the rebased tip
-8. Removes worktree directory and branch
-9. Kills tmux session `<project>/<slug>` if it exists (switches to project main session first if you're running from inside it)
-10. `cd`s back to main checkout (via shell wrapper)
+4. If `gh` is installed: checks for a GitHub PR on the current branch
+   - **PR merged**: confirms cleanup (skipped with `--yes`), removes worktree + branch without rebasing, returns
+   - **PR open**: errors — merge or close the PR on GitHub first
+   - **No PR / gh unavailable**: continues with local rebase flow below
+5. Confirms: `Rebase wt/<slug> onto <base> and fast-forward? [y/N]` — skipped by `--yes`
+6. Fetches remote base branch (best-effort, ignores failure)
+7. Rebases worktree branch onto base — aborts and prints manual instructions if there are conflicts
+8. Fast-forwards base branch to the rebased tip
+9. Removes worktree directory and branch
+10. Kills tmux session `<project>/<slug>` if it exists (switches to project main session first if you're running from inside it)
+11. `cd`s back to main checkout (via shell wrapper)
 
 > `wt done` still works as an alias for backward compatibility.
 

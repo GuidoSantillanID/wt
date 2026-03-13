@@ -328,6 +328,95 @@ assert_dir_not_exists "worktree removed"              "$WT_PATH_FY"
 branch_fy=$(git -C "$REPO" rev-parse --verify "wt/finish-yes-test" 2>/dev/null || echo "gone")
 assert_eq             "branch deleted"                "gone"   "$branch_fy"
 
+# ── wt finish — PR-flow detection ─────────────────────────────────────────────
+
+MOCK_BIN_FIN="${TMPROOT}/mock-bin-fin"
+mkdir -p "$MOCK_BIN_FIN"
+cat > "${MOCK_BIN_FIN}/gh" << 'MOCKEOF_FIN'
+#!/usr/bin/env bash
+echo "$@" >> "${MOCK_BIN_FIN_PATH}/gh-calls.log"
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  echo "MERGED"
+fi
+MOCKEOF_FIN
+sed -i.bak "s|\${MOCK_BIN_FIN_PATH}|${MOCK_BIN_FIN}|g" "${MOCK_BIN_FIN}/gh" && rm "${MOCK_BIN_FIN}/gh.bak"
+chmod +x "${MOCK_BIN_FIN}/gh"
+
+section "wt finish — PR merged skips rebase"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_PATH_FM="${REPO}/.worktrees/finish-merged-test"
+stdout_fm=$(wt new "finish merged test" 2>/dev/null)
+assert_eq "created finish-merged worktree" "$WT_PATH_FM" "$stdout_fm"
+echo "pr-merged-work" > "${WT_PATH_FM}/pr-merged.txt"
+git -C "$WT_PATH_FM" add pr-merged.txt
+git -C "$WT_PATH_FM" commit -q -m "PR merged test commit"
+cd "$WT_PATH_FM"
+rm -f "${MOCK_BIN_FIN}/gh-calls.log"
+_tmp_fm=$(mktemp)
+stdout_fin_m=$(printf "y\n" | PATH="${MOCK_BIN_FIN}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" finish 2>"$_tmp_fm")
+out_fin_m=$(cat "$_tmp_fm"); rm -f "$_tmp_fm"
+assert_contains       "reports PR merged"     "PR merged"  "$out_fin_m"
+assert_contains       "reports Done"          "Done!"      "$out_fin_m"
+assert_eq             "stdout is main path"   "$REPO"      "$stdout_fin_m"
+assert_dir_not_exists "worktree removed"      "$WT_PATH_FM"
+branch_fm=$(git -C "$REPO" rev-parse --verify "wt/finish-merged-test" 2>/dev/null || echo "gone")
+assert_eq             "branch deleted"        "gone"       "$branch_fm"
+gh_log_fin=$(cat "${MOCK_BIN_FIN}/gh-calls.log" 2>/dev/null || echo "")
+assert_contains       "gh pr view called"     "pr view"    "$gh_log_fin"
+assert_not_contains   "rebase skipped"        "Rebase"     "$out_fin_m"
+
+section "wt finish — PR open blocks finish"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_PATH_FO="${REPO}/.worktrees/finish-open-test"
+stdout_fo=$(wt new "finish open test" 2>/dev/null)
+assert_eq "created finish-open worktree" "$WT_PATH_FO" "$stdout_fo"
+echo "pr-open-work" > "${WT_PATH_FO}/pr-open.txt"
+git -C "$WT_PATH_FO" add pr-open.txt
+git -C "$WT_PATH_FO" commit -q -m "PR open test commit"
+cat > "${MOCK_BIN_FIN}/gh" << 'MOCKEOF_FIN_O'
+#!/usr/bin/env bash
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  echo "OPEN"
+fi
+MOCKEOF_FIN_O
+chmod +x "${MOCK_BIN_FIN}/gh"
+cd "$WT_PATH_FO"
+_tmp_fo=$(mktemp)
+PATH="${MOCK_BIN_FIN}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" finish 2>"$_tmp_fo" || true
+out_fin_o=$(cat "$_tmp_fo"); rm -f "$_tmp_fo"
+assert_contains "errors on open PR" "still open" "$out_fin_o"
+git -C "$REPO" worktree remove "$WT_PATH_FO" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/finish-open-test" 2>/dev/null || true
+
+section "wt finish --yes — PR merged skips confirm"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_PATH_FMY="${REPO}/.worktrees/finish-merged-yes-test"
+stdout_fmy=$(wt new "finish merged yes test" 2>/dev/null)
+assert_eq "created finish-merged-yes worktree" "$WT_PATH_FMY" "$stdout_fmy"
+echo "pr-merged-yes" > "${WT_PATH_FMY}/pr-merged-yes.txt"
+git -C "$WT_PATH_FMY" add pr-merged-yes.txt
+git -C "$WT_PATH_FMY" commit -q -m "PR merged --yes test commit"
+cat > "${MOCK_BIN_FIN}/gh" << 'MOCKEOF_FIN_M'
+#!/usr/bin/env bash
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  echo "MERGED"
+fi
+MOCKEOF_FIN_M
+chmod +x "${MOCK_BIN_FIN}/gh"
+cd "$WT_PATH_FMY"
+_tmp_fmy=$(mktemp)
+stdout_fin_my=$(PATH="${MOCK_BIN_FIN}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" finish --yes 2>"$_tmp_fmy")
+out_fin_my=$(cat "$_tmp_fmy"); rm -f "$_tmp_fmy"
+assert_contains       "cleanup succeeds"      "Done!"           "$out_fin_my"
+assert_dir_not_exists "worktree removed"      "$WT_PATH_FMY"
+branch_fmy=$(git -C "$REPO" rev-parse --verify "wt/finish-merged-yes-test" 2>/dev/null || echo "gone")
+assert_eq             "branch deleted"        "gone"            "$branch_fmy"
+
+rm -rf "$MOCK_BIN_FIN"
+
 # ── wt drop --yes ─────────────────────────────────────────────────────────────
 section "wt drop --yes — clean worktree (no stdin pipe)"
 cd "$REPO"
