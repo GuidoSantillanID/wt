@@ -85,7 +85,7 @@ mkdir -p "$test_base"
 # Create test git repo inside test_base
 REPO="${test_base}/test-project"
 mkdir -p "$REPO"
-git -C "$REPO" init -q
+git -C "$REPO" init -q -b main
 git -C "$REPO" config user.email "test@test.com"
 git -C "$REPO" config user.name "Test"
 echo "hello" > "$REPO/README.md"
