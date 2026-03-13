@@ -242,6 +242,8 @@ NOTES
   • Use `wt sync` to keep long-lived worktrees current with the base branch
   • `wt pr` requires the GitHub CLI (gh) — https://cli.github.com
   • `wt pr` rebases before pushing (same as wt sync); worktree stays alive after
+  • After merging the PR on GitHub, run `wt finish` to clean up the worktree
+  • `wt finish` detects a merged PR (via gh) and skips local rebase/fast-forward
   • Configure search paths: export WT_SEARCH_PATHS=~/src:~/projects
   • Or create ~/.config/wt/config with one directory per line
 HELP
@@ -450,14 +452,34 @@ cmd_finish() {
     fi
   fi
 
+  local main_wt
+  main_wt=$(get_main_worktree)
+  [[ -z "$main_wt" ]] && error "Could not determine main worktree path"
+
+  # ── PR-flow detection ───────────────────────────────────────────────────────
+  # If gh is available and a PR exists for this branch, take the PR cleanup path.
+  if command -v gh &>/dev/null; then
+    local pr_state
+    pr_state=$(gh pr view --json state --jq '.state' 2>/dev/null || echo "")
+    if [[ "$pr_state" == "MERGED" ]]; then
+      if (( auto_yes == 0 )); then
+        confirm "PR merged. Clean up worktree?" \
+          || { info "Aborted."; exit 0; }
+      fi
+      _cleanup_worktree "$repo_root" "$branch" "$main_wt" "$project" "$slug" "force"
+      success "Done! PR merged, worktree cleaned up."
+      echo "$main_wt"
+      return 0
+    elif [[ "$pr_state" == "OPEN" ]]; then
+      error "PR is still open. Merge or close it on GitHub first, then run 'wt finish' again."
+    fi
+    # CLOSED (not merged), empty (no PR), or gh call failed → fall through to local flow
+  fi
+
   if (( auto_yes == 0 )); then
     confirm "Rebase ${BOLD}${branch}${RESET} onto ${BOLD}${base_branch}${RESET} and fast-forward?" \
       || { info "Aborted."; exit 0; }
   fi
-
-  local main_wt
-  main_wt=$(get_main_worktree)
-  [[ -z "$main_wt" ]] && error "Could not determine main worktree path"
 
   # Fetch remote base branch if a remote exists (best-effort, ignore failure)
   git fetch origin "${base_branch}" >&2 2>/dev/null || true
