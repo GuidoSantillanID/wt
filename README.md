@@ -10,6 +10,7 @@ Works great standalone. Works *especially* well with **Claude Code + tmux** — 
 wt new "add dark mode toggle"     # create worktree + branch, cd into it
 wt finish                         # rebase + fast-forward + clean up
 wt sync                           # rebase onto latest base (keep it current)
+wt retarget [branch]              # change which branch this worktree targets
 wt drop                           # abandon without merging
 wt pr                             # push branch + open GitHub PR
 wt status                         # show current worktree info
@@ -84,6 +85,10 @@ wt finish
 # Keep a long-lived worktree current with the base branch
 wt sync
 
+# Change which branch this worktree will merge into
+wt retarget main           # switch to main
+wt retarget                # interactive picker
+
 # Abandon work without merging
 wt drop
 
@@ -157,6 +162,22 @@ Rebases the current worktree branch onto the latest base branch from origin. Kee
 5. Prints success — worktree stays intact, no cleanup
 
 Unlike `wt finish`, sync does not merge into the base, remove the worktree, or change your working directory.
+
+### `wt retarget [branch]`
+
+Changes the base branch recorded in `.wt-meta` — no git operations, metadata only. All subsequent `wt finish`, `wt sync`, and `wt pr` commands will use the new base.
+
+If `branch` is given, it must exist locally or as `origin/<branch>`. If omitted, shows an interactive picker listing remote branches (falls back to local branches if no remote).
+
+```bash
+# Change to a specific branch
+wt retarget main
+
+# Interactive picker
+wt retarget
+```
+
+After retargeting, run `wt sync` if you want to rebase the working branch onto the new base immediately.
 
 ### `wt drop [--yes|-y]`
 

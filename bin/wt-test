@@ -930,6 +930,74 @@ cd "$REG_PROJ/.worktrees/final-cleanup"
 wt drop --yes 2>/dev/null  # empty .worktrees/ + no wt/* branches now
 assert_not_contains "auto-unregister fired" "$REG_PROJ" "$(cat "$registry_file" 2>/dev/null)"
 
+# ─── wt retarget ─────────────────────────────────────────────────────────────
+
+# Setup: fresh project with two local branches (main, feature-a) for retarget tests
+RETARGET_PROJ="${TMPROOT}/retarget-proj"
+mkdir -p "$RETARGET_PROJ"
+git -C "$RETARGET_PROJ" init -q
+git -C "$RETARGET_PROJ" config user.email "test@test.com"
+git -C "$RETARGET_PROJ" config user.name "Test"
+echo "init" > "$RETARGET_PROJ/README.md"
+git -C "$RETARGET_PROJ" add README.md
+git -C "$RETARGET_PROJ" commit -q -m "initial"
+# Create a second local branch to retarget onto
+git -C "$RETARGET_PROJ" checkout -q -b feature-a
+echo "feature-a" > "$RETARGET_PROJ/feature-a.txt"
+git -C "$RETARGET_PROJ" add feature-a.txt
+git -C "$RETARGET_PROJ" commit -q -m "feature-a commit"
+git -C "$RETARGET_PROJ" checkout -q main
+
+cd "$RETARGET_PROJ"
+WT_RETARGET="${RETARGET_PROJ}/.worktrees/retarget-test"
+wt new "retarget test" 2>/dev/null
+
+section "wt retarget — change base with argument"
+cd "$WT_RETARGET"
+out_ret=$(wt retarget feature-a 2>&1 || true)
+meta_base=$(grep "^base_branch=" "${WT_RETARGET}/.wt-meta" | cut -d= -f2)
+assert_eq       ".wt-meta base_branch updated" "feature-a" "$meta_base"
+assert_contains "success message shown"        "feature-a" "$out_ret"
+
+section "wt retarget — no stdout output (no cd contract)"
+cd "$WT_RETARGET"
+# Reset to main first
+sed -i.bak "s/^base_branch=.*/base_branch=main/" "${WT_RETARGET}/.wt-meta" && rm -f "${WT_RETARGET}/.wt-meta.bak"
+stdout_ret=$(wt retarget feature-a 2>/dev/null || true)
+assert_eq "stdout is empty" "" "$stdout_ret"
+
+section "wt retarget — same base is a no-op"
+cd "$WT_RETARGET"
+out_noop=$(wt retarget feature-a 2>&1 || true)
+assert_contains "reports already targeting" "feature-a" "$out_noop"
+# base_branch should still be feature-a (no change)
+meta_base2=$(grep "^base_branch=" "${WT_RETARGET}/.wt-meta" | cut -d= -f2)
+assert_eq ".wt-meta unchanged" "feature-a" "$meta_base2"
+
+section "wt retarget — invalid branch errors"
+cd "$WT_RETARGET"
+out_inv=$(wt retarget nonexistent-branch-xyz 2>&1 || true)
+assert_contains "errors on unknown branch" "nonexistent-branch-xyz" "$out_inv"
+
+section "wt retarget — from main checkout errors"
+cd "$RETARGET_PROJ"
+out_main=$(wt retarget feature-a 2>&1 || true)
+assert_contains "errors outside worktree" "main checkout" "$out_main"
+
+section "wt retarget — missing .wt-meta errors"
+# Create a bare worktree dir without .wt-meta
+NO_META_WT="${RETARGET_PROJ}/.worktrees/no-meta-test"
+git -C "$RETARGET_PROJ" worktree add "$NO_META_WT" -b wt/no-meta-test 2>/dev/null
+cd "$NO_META_WT"
+out_nometa=$(WT_REGISTRY="$registry_file" bash "$WT" retarget feature-a 2>&1 || true)
+assert_contains "errors on missing .wt-meta" ".wt-meta" "$out_nometa"
+git -C "$RETARGET_PROJ" worktree remove "$NO_META_WT" --force 2>/dev/null || true
+git -C "$RETARGET_PROJ" branch -D wt/no-meta-test 2>/dev/null || true
+
+# Cleanup retarget project
+git -C "$RETARGET_PROJ" worktree remove "$WT_RETARGET" --force 2>/dev/null || true
+git -C "$RETARGET_PROJ" branch -D wt/retarget-test 2>/dev/null || true
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 echo ""

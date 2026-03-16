@@ -181,9 +181,8 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 5. [if TMUX] Check claude_running_in_session (stubbed to false by default) → warn + confirm  ← skipped by --yes
 6. Confirm: "Rebase <branch> onto <base_branch> and fast-forward?"  ← skipped by --yes
 7. get_main_worktree()
-8. git fetch origin <base_branch> (best-effort, ignore failure)
-9. git rebase <base_branch>  (in repo_root context)
-   → on conflict: git rebase --abort; print manual instructions; exit 1
+8. _rebase_onto_base(base_branch, branch)
+   → on conflict: git rebase --abort; print "Run wt sync first"; exit 1
 10. Fast-forward:
     a. Try: git fetch . HEAD:<base_branch> (works if base_branch not checked out here)
     b. Fallback: git -C <main_wt> merge --ff-only <branch> (if main_wt is on base_branch)
@@ -199,16 +198,48 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 2. Verify: repo_root/.git is a FILE → in a worktree; dir → error "main checkout"
 3. Read .wt-meta: base_branch, branch, description
 4. Validate: no uncommitted changes (git status --porcelain)
-5. git fetch origin <base_branch> (warn on failure, continue)
-6. Resolve rebase target:
-   - if origin/<base_branch> ref exists → use it (ensures remote state)
-   - else fall back to local <base_branch>
-7. git rebase <rebase_target>
-   → on conflict: git rebase --abort; print manual instructions; exit 1
-8. Print success — no stdout output, no cleanup
+5. _rebase_onto_base(base_branch, branch)
+   → on conflict: print continue/abort instructions; exit 1
+6. Print success — no stdout output, no cleanup
 ```
 
 Key difference from `wt finish`: rebases onto `origin/<base_branch>` (not local), no confirmation, no fast-forward, no cleanup, no cd.
+
+### `wt retarget [branch]`
+
+```
+1. Verify: repo_root/.git is a FILE → in a worktree; dir → error
+2. Read .wt-meta: base_branch, branch, description
+3. Validate: base_branch and branch non-empty
+4. If arg given:
+   - git rev-parse --verify "$arg" OR git rev-parse --verify "origin/$arg"
+   - Neither found → error "Branch not found: X"
+5. If no arg:
+   - List remote branches (git branch -r --list 'origin/*', strip prefix/HEAD)
+   - If no remote branches: fall back to local branches
+   - If no branches at all → error
+   - Interactive numbered picker; invalid choice → warn + exit 0
+6. If new_base == base_branch → info "Already targeting X"; return 0
+7. sed -i.bak "s/^base_branch=.*/base_branch=${new_base}/" meta_file
+8. success "Base branch changed: old → new"
+9. No stdout output (no cd needed)
+```
+
+### `_rebase_onto_base base_branch branch` (shared helper)
+
+```
+1. git fetch origin <base_branch> >&2 (warn on failure, continue)
+2. Resolve rebase_target:
+   - origin/<base_branch> if ref exists
+   - else fall back to local <base_branch>
+3. git rebase <rebase_target> >&2
+4. Returns git rebase exit code — conflict handling left to caller
+```
+
+Used by `cmd_finish`, `cmd_sync`, and `cmd_pr`. Each caller handles conflict differently:
+- `cmd_finish`: `git rebase --abort`, print "Run 'wt sync' first", exit 1
+- `cmd_sync`: leave in conflict state, print continue/abort instructions, exit 1
+- `cmd_pr`: leave in conflict state, print continue/abort instructions, exit 1
 
 ### `wt drop [--yes|-y]`
 

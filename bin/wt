@@ -7,14 +7,15 @@
 # parallel development workflows.
 #
 # COMMANDS
-#   wt new [--with-deps] "<description>"             Create a worktree with auto-named branch
-#   wt finish [--yes|-y]               Rebase + fast-forward into base, clean up
-#   wt sync                            Rebase onto latest base branch (from origin)
-#   wt drop [--yes|-y]                 Abandon worktree without merging, clean up
-#   wt pr [--draft] [--yes|-y]         Push branch and open a GitHub PR (requires gh)
-#   wt status                          Show current worktree info
-#   wt list                            Show all worktrees across projects
-#   wt help                            Show this help
+#   wt new [--with-deps] "<description>"   Create a worktree with auto-named branch
+#   wt finish [--yes|-y]                   Rebase + fast-forward into base, clean up
+#   wt sync                                Rebase onto latest base branch (from origin)
+#   wt retarget [branch]                   Change this worktree's base branch
+#   wt drop [--yes|-y]                     Abandon worktree without merging, clean up
+#   wt pr [--draft] [--yes|-y]             Push branch and open a GitHub PR (requires gh)
+#   wt status                              Show current worktree info
+#   wt list                                Show all worktrees across projects
+#   wt help                                Show this help
 #
 # INSTALLATION
 #   1. Run ./install.sh  (copies bin/wt to ~/.local/bin/wt)
@@ -199,6 +200,7 @@ USAGE
   wt new [--with-deps] "<description>"   Create a worktree with auto-named branch
   wt finish [--yes|-y]                   Rebase onto base, fast-forward, clean up
   wt sync                                Rebase onto latest base branch (from origin)
+  wt retarget [branch]                   Change this worktree's base branch
   wt drop [--yes|-y]                     Abandon worktree without merging, clean up
   wt pr [--draft] [--yes|-y]             Push branch and open a GitHub PR (requires gh)
   wt status                              Show current worktree info
@@ -400,6 +402,113 @@ EOF
   echo "$worktree_path"
 }
 
+# wt retarget [branch] — change this worktree's base branch in .wt-meta
+cmd_retarget() {
+  local repo_root
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+    || error "Not inside a git repository"
+
+  [[ -d "${repo_root}/.git" ]] \
+    && error "You are in the main checkout, not a worktree."
+
+  local meta_file="${repo_root}/${META_FILE}"
+  [[ -f "$meta_file" ]] \
+    || error "No ${META_FILE} found. Was this worktree created with 'wt new'?"
+
+  local base_branch branch description
+  base_branch=$(read_meta "$meta_file" "base_branch")
+  branch=$(read_meta "$meta_file" "branch")
+  description=$(read_meta "$meta_file" "description")
+
+  [[ -z "$base_branch" || -z "$branch" ]] \
+    && error "Corrupt .wt-meta — missing required fields"
+
+  local new_base=""
+
+  if [[ -n "${1:-}" ]]; then
+    # Branch provided as argument — validate it exists locally or as origin/<branch>
+    local target="$1"
+    if git rev-parse --verify "$target" &>/dev/null \
+        || git rev-parse --verify "origin/$target" &>/dev/null; then
+      new_base="$target"
+    else
+      error "Branch not found: '${target}' (checked local and origin/${target})"
+    fi
+  else
+    # Interactive picker: list remote branches, fall back to local
+    local branches=()
+    while IFS= read -r b; do
+      branches+=("$b")
+    done < <(
+      git branch -r --list 'origin/*' 2>/dev/null \
+        | sed -e 's/^[[:space:]]*//' -e '/HEAD/d' -e 's|^origin/||' \
+        | grep -v "^${branch#*/}$" \
+        | sort
+    )
+
+    if (( ${#branches[@]} == 0 )); then
+      while IFS= read -r b; do
+        branches+=("$b")
+      done < <(
+        git branch 2>/dev/null \
+          | sed -e 's/^[[:space:]]*//' -e 's/^\* //' \
+          | grep -v "^${branch}$" \
+          | sort
+      )
+    fi
+
+    if (( ${#branches[@]} == 0 )); then
+      error "No other branches found to retarget onto."
+    fi
+
+    echo -e "  Current base: ${BOLD}${base_branch}${RESET}" >&2
+    echo -e "  Pick a new base branch:" >&2
+    local i
+    for i in "${!branches[@]}"; do
+      local marker=""
+      [[ "${branches[$i]}" == "$base_branch" ]] && marker=" (current)"
+      echo -e "    $((i+1))) ${branches[$i]}${marker}" >&2
+    done
+    local choice
+    echo -en "  ${BOLD}Enter number [1-${#branches[@]}]:${RESET} " >&2
+    read -r choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#branches[@]} )); then
+      new_base="${branches[$((choice-1))]}"
+    else
+      warn "Invalid choice. Aborted."
+      exit 0
+    fi
+  fi
+
+  if [[ "$new_base" == "$base_branch" ]]; then
+    info "Already targeting ${BOLD}${new_base}${RESET} — no change."
+    return 0
+  fi
+
+  sed -i.bak "s/^base_branch=.*/base_branch=${new_base}/" "$meta_file" \
+    && rm -f "${meta_file}.bak"
+
+  success "Base branch changed: ${BOLD}${base_branch}${RESET} → ${BOLD}${new_base}${RESET}"
+  info "Run 'wt sync' to rebase onto the new base, or 'wt finish' when done."
+}
+
+# Fetch origin/<base_branch> and rebase current branch onto it (fall back to local).
+# Prints progress to stderr. Does NOT handle conflicts — caller must.
+# Returns: git rebase exit code (non-zero on conflict).
+_rebase_onto_base() {
+  local base_branch="$1" branch="$2"
+  info "Fetching origin/${base_branch}..."
+  git fetch origin "${base_branch}" >&2 2>/dev/null \
+    || warn "Could not fetch origin/${base_branch} — will rebase onto local ref"
+  local rebase_target="origin/${base_branch}"
+  if ! git rev-parse --verify "${rebase_target}" &>/dev/null; then
+    rebase_target="${base_branch}"
+    warn "No remote-tracking branch — using local ${base_branch}"
+  fi
+  info "Rebasing ${branch} onto ${rebase_target}..."
+  git rebase "${rebase_target}" >&2
+}
+
 # wt finish — rebase worktree onto base, fast-forward, clean up
 cmd_finish() {
   local auto_yes=0
@@ -478,14 +587,7 @@ cmd_finish() {
       || { info "Aborted."; exit 0; }
   fi
 
-  # Fetch remote base branch if a remote exists (best-effort, ignore failure)
-  git fetch origin "${base_branch}" >&2 2>/dev/null || true
-
-  info "Rebasing ${branch} onto ${base_branch}..."
-
-  # Rebase onto base — produces a linear history regardless of base drift
-  local rebase_err
-  if ! rebase_err=$(git rebase -- "${base_branch}" 2>&1); then
+  if ! _rebase_onto_base "$base_branch" "$branch"; then
     git rebase --abort 2>/dev/null || true
     warn "Rebase conflict. Aborted."
     echo -e "  Run 'wt sync' to rebase and resolve conflicts first, then retry 'wt finish'." >&2
@@ -556,29 +658,14 @@ cmd_sync() {
   [[ -n "$(git status --porcelain)" ]] \
     && error "Uncommitted changes present. Commit or stash before 'wt sync'."
 
-  # Fetch remote base branch to get latest (warn on failure, still try rebase)
-  info "Fetching origin/${base_branch}..."
-  git fetch origin "${base_branch}" >&2 2>/dev/null \
-    || warn "Could not fetch origin/${base_branch} — will rebase onto local ref"
-
-  # Prefer origin/<base_branch> (ensures we get remote state); fall back to local
-  local rebase_target="origin/${base_branch}"
-  if ! git rev-parse --verify "${rebase_target}" &>/dev/null; then
-    rebase_target="${base_branch}"
-    warn "No remote-tracking branch ${rebase_target} — using local ${base_branch}"
-  fi
-
-  info "Rebasing ${branch} onto ${rebase_target}..."
-
-  local rebase_err
-  if ! rebase_err=$(git rebase "${rebase_target}" 2>&1); then
+  if ! _rebase_onto_base "$base_branch" "$branch"; then
     warn "Rebase paused — conflicts detected."
     echo -e "  Fix conflicts, then:  git add <files> && git rebase --continue" >&2
     echo -e "  To abort:             git rebase --abort" >&2
     exit 1
   fi
 
-  success "Synced — ${branch} is up to date with ${rebase_target}"
+  success "Synced — ${branch} is up to date with ${base_branch}"
 }
 
 # wt drop — abandon worktree without merging
@@ -722,25 +809,13 @@ cmd_pr() {
   git remote get-url origin &>/dev/null \
     || error "No 'origin' remote configured. 'wt pr' requires a remote to push to."
 
-  info "Fetching ${base_branch} from origin..."
-  git fetch origin "${base_branch}" >&2 2>/dev/null \
-    || warn "Could not fetch origin/${base_branch} — will rebase onto local ref"
-
-  local rebase_target="origin/${base_branch}"
-  if ! git rev-parse --verify "${rebase_target}" &>/dev/null; then
-    rebase_target="${base_branch}"
-    warn "No remote-tracking branch for ${base_branch} — using local ref"
-  fi
-
-  info "Rebasing onto ${rebase_target}..."
-  local rebase_err
-  if ! rebase_err=$(git rebase "${rebase_target}" 2>&1); then
+  if ! _rebase_onto_base "$base_branch" "$branch"; then
     warn "Rebase paused — conflicts detected."
     echo -e "  Fix conflicts, then:  git add <files> && git rebase --continue" >&2
     echo -e "  To abort:             git rebase --abort && git checkout ${branch}" >&2
     exit 1
   fi
-  success "Rebased onto ${rebase_target}"
+  success "Rebased onto ${base_branch}"
 
   info "Pushing ${branch} to origin..."
   git push --force-with-lease origin "${branch}" >&2 \
@@ -757,7 +832,7 @@ cmd_pr() {
   fi
 
   local pr_body
-  pr_body=$(git log --oneline --reverse "${rebase_target}..HEAD" 2>/dev/null \
+  pr_body=$(git log --oneline --reverse "origin/${base_branch}..HEAD" 2>/dev/null \
     | sed 's/^/- /' || echo "")
 
   if (( auto_yes == 0 )); then
@@ -1117,6 +1192,7 @@ main() {
     new)            cmd_new "$@" ;;
     finish|done)    cmd_finish "$@" ;;
     sync)           cmd_sync "$@" ;;
+    retarget)       cmd_retarget "$@" ;;
     drop)           cmd_drop "$@" ;;
     pr)             cmd_pr "$@" ;;
     status|st)      cmd_status "$@" ;;
