@@ -326,6 +326,55 @@ assert_dir_not_exists "worktree removed"              "$WT_PATH_FY"
 branch_fy=$(git -C "$REPO" rev-parse --verify "wt/finish-yes-test" 2>/dev/null || echo "gone")
 assert_eq             "branch deleted"                "gone"   "$branch_fy"
 
+# ── wt finish — uses origin/<base> when local base is behind ──────────────────
+# Regression: old wt finish rebased onto local base_branch directly, causing
+# conflicts when local base was behind origin. Should use origin/<base> instead.
+section "wt finish — uses origin/base when local base is stale"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+
+# Create a bare remote and set origin on the test repo
+BARE_FIN="${TMPROOT}/bare-fin.git"
+git -C "$REPO" clone --bare . "$BARE_FIN" 2>/dev/null
+git -C "$REPO" remote add origin "$BARE_FIN" 2>/dev/null || git -C "$REPO" remote set-url origin "$BARE_FIN"
+
+# Advance the remote's dev branch (simulates origin moving ahead of local)
+git -C "$BARE_FIN" branch -f dev HEAD 2>/dev/null || true
+# Push a new commit to the bare remote so origin/dev is ahead of local dev
+ADVANCE_WD="${TMPROOT}/advance-wd"
+git clone "$BARE_FIN" "$ADVANCE_WD" -q 2>/dev/null
+echo "remote-advance" > "${ADVANCE_WD}/remote-advance.txt"
+git -C "$ADVANCE_WD" add remote-advance.txt
+git -C "$ADVANCE_WD" commit -q -m "remote advance commit"
+git -C "$ADVANCE_WD" push -q 2>/dev/null
+rm -rf "$ADVANCE_WD"
+
+# Fetch so origin/dev is known but do NOT merge — local dev stays behind
+git -C "$REPO" fetch origin dev 2>/dev/null
+
+# Create worktree from local dev (which is now behind origin/dev)
+WT_PATH_FOS="${REPO}/.worktrees/finish-origin-stale"
+wt new "finish origin stale" 2>/dev/null
+echo "my-work" > "${WT_PATH_FOS}/my-work.txt"
+git -C "$WT_PATH_FOS" add my-work.txt
+git -C "$WT_PATH_FOS" commit -q -m "work on stale base"
+
+cd "$WT_PATH_FOS"
+_tmp_fos=$(mktemp)
+stdout_fos=$(wt finish --yes 2>"$_tmp_fos")
+out_fos=$(cat "$_tmp_fos"); rm -f "$_tmp_fos"
+assert_contains       "finish succeeds despite stale local base" "Done!"  "$out_fos"
+assert_dir_not_exists "worktree removed"                         "$WT_PATH_FOS"
+branch_fos=$(git -C "$REPO" rev-parse --verify "wt/finish-origin-stale" 2>/dev/null || echo "gone")
+assert_eq             "branch deleted"                           "gone"   "$branch_fos"
+# Verify the remote-advance commit is now in local dev (base was ff'd to origin/dev tip)
+git -C "$REPO" checkout -q dev
+assert_contains "remote-advance commit landed on dev" "remote advance commit" \
+  "$(git -C "$REPO" log --oneline -5)"
+
+git -C "$REPO" remote remove origin 2>/dev/null || true
+rm -rf "$BARE_FIN"
+
 # ── wt finish — PR-flow detection ─────────────────────────────────────────────
 
 MOCK_BIN_FIN="${TMPROOT}/mock-bin-fin"
