@@ -52,26 +52,18 @@ wt() {
 }
 ```
 
-## Configure search paths
+## Project registry
 
-`wt` needs to know where your projects live to find them by name. Configure in order of precedence:
+`wt` tracks projects automatically. Run `wt new` from inside any git repo — it registers that project in `~/.config/wt/projects`. `wt list` and `wt doctor` read the registry; no manual config needed.
 
-**1. Environment variable** (colon-separated, like `PATH`):
+When the last worktree in a project is cleaned up and no `wt/*` branches remain, the project is automatically removed from the registry.
+
+**Override the registry path** (useful for CI or custom setups):
 ```bash
-export WT_SEARCH_PATHS=~/src:~/projects:~/work
+export WT_REGISTRY=~/my-custom-registry
 ```
 
-**2. Config file** (`~/.config/wt/config`, one path per line):
-```
-~/src
-~/projects
-~/work
-```
-
-**3. Default** (if neither is set):
-```
-~/src  ~/projects  ~/repos  ~/code
-```
+The registry is a plain text file — one absolute project path per line.
 
 ## Cheat sheet
 
@@ -81,9 +73,6 @@ wt new "fix the login bug"
 
 # Copy node_modules from main checkout (zero-cost on APFS/btrfs)
 wt new --with-deps "fix the login bug"
-
-# Create from anywhere by specifying the project name
-wt new myapp "add dark mode"
 
 # List all active worktrees across all projects
 wt list
@@ -122,13 +111,13 @@ wt doctor
 
 ## Commands reference
 
-### `wt new [--with-deps] [project] "<description>"`
+### `wt new [--with-deps] "<description>"`
 
 Creates a new git worktree with an auto-named branch.
 
-- If run from inside a project, uses the current repo
-- If run from outside, pass the project name as the first argument
+- Must be run from inside a git repo (or a worktree of one)
 - If run from inside an existing worktree, creates from the main checkout
+- Registers the project automatically on first use
 - By default, skips all dependency handling — worktree creation is instant with no prompts
 - `--with-deps`: opt into dependency handling. For JS projects with `node_modules/` in the main checkout, copies it using copy-on-write cloning (`cp -c` on APFS, `--reflink=auto` on btrfs/XFS) — zero extra disk space on supported filesystems, 10–30× faster than `npm install` on ext4. Otherwise, detects the package manager (pnpm/yarn/npm/uv/poetry/pip) and prompts to install.
 
@@ -214,7 +203,7 @@ All output goes to stderr. No flags needed.
 
 ### `wt list`
 
-Shows all active worktrees across all configured search paths:
+Shows all active worktrees across all registered projects:
 
 ```
 myapp
@@ -241,14 +230,15 @@ Scans for and interactively fixes:
 This is the sweet spot `wt` was designed for. With [tmux-sessionizer](https://github.com/ThePrimeagen/tmux-sessionizer) (or similar), each worktree becomes its own tmux session automatically:
 
 ```bash
-# Start a Claude task in isolation
-wt new myapp "implement dark mode"
+# Start a Claude task in isolation (from inside the project dir)
+cd myapp
+wt new "implement dark mode"
 # → creates myapp/.worktrees/implement-dark-mode/
 # → tmux-sessionizer picks it up as session "myapp/implement-dark-mode"
 # → run `claude` in that session — fully isolated branch
 
 # While Claude works, start another task in parallel
-wt new myapp "fix login redirect"
+wt new "fix login redirect"
 # → separate worktree, separate branch, separate tmux session
 
 # Claude finishes dark mode → rebase + clean up
@@ -277,11 +267,11 @@ claude_running_in_session() {
 ### Parallel feature development
 
 ```bash
-# Window 1: main feature
-wt new myapp "implement user auth"
+# Window 1: main feature (from inside the project dir)
+cd myapp && wt new "implement user auth"
 
 # Window 2 (new tmux window): quick bugfix in parallel
-wt new myapp "fix logout redirect"
+cd myapp && wt new "fix logout redirect"
 
 # Check status of both
 wt list
@@ -318,6 +308,7 @@ myapp/fix-logout-redirect
 - Descriptions are truncated to 50 characters when generating the slug.
 - `wt new` excludes `.worktrees/` from `git status` via `.git/info/exclude` (repo-local, not committed). This keeps your `.gitignore` clean. To adopt `wt` as a team tool, add `.worktrees/` to the committed `.gitignore` instead.
 - Running `wt new` from inside an existing worktree is safe — it detects the context and creates the new worktree from the main checkout, not nested inside the current one.
+- Projects are auto-registered in `~/.config/wt/projects` on first `wt new` and auto-removed when the last worktree is cleaned up.
 - `wt drop` force-deletes the branch without merging. Use it when you want to discard the work entirely.
 
 ## Requirements
@@ -328,11 +319,11 @@ myapp/fix-logout-redirect
 ## Running tests
 
 ```bash
-bin/wt-test
-bin/wt-test --keep   # preserve temp dir on failure for debugging
+bash bin/wt-test < /dev/null
+bash bin/wt-test --keep < /dev/null   # preserve temp dir on failure for debugging
 ```
 
-Tests create a real git repo in `/tmp`, run all commands against it, and clean up.
+Tests create a real git repo in `/tmp`, run all commands against it, and clean up. Redirect stdin from `/dev/null` to prevent interactive prompts from blocking.
 
 ## Workflow setup (optional)
 

@@ -7,7 +7,7 @@
 # parallel development workflows.
 #
 # COMMANDS
-#   wt new [--with-deps] [project] "<description>"   Create a worktree with auto-named branch
+#   wt new [--with-deps] "<description>"             Create a worktree with auto-named branch
 #   wt finish [--yes|-y]               Rebase + fast-forward into base, clean up
 #   wt sync                            Rebase onto latest base branch (from origin)
 #   wt drop [--yes|-y]                 Abandon worktree without merging, clean up
@@ -42,9 +42,9 @@
 #        fi
 #      }
 #
-# CONFIGURATION
-#   Set WT_SEARCH_PATHS (colon-separated) or create ~/.config/wt/config
-#   (one directory per line). See README for details.
+# REGISTRY
+#   Projects are auto-registered in ${XDG_CONFIG_HOME:-~/.config}/wt/projects
+#   when you run `wt new`. Override with WT_REGISTRY env var.
 #
 # HOW IT WORKS
 #   - Worktrees live at <project>/.worktrees/<slug>/
@@ -63,27 +63,45 @@ BRANCH_PREFIX="wt"
 WORKTREES_DIR=".worktrees"
 META_FILE=".wt-meta"
 
-# ─── Config: search paths ────────────────────────────────────────────────────
-# Load PROJECT_SEARCH_PATHS from (in order of precedence):
-#   1. WT_SEARCH_PATHS env var (colon-separated, like PATH)
-#   2. ~/.config/wt/config file (one path per line, blank lines ignored)
-#   3. Default: ~/src ~/projects ~/repos ~/code
+# ─── Registry ────────────────────────────────────────────────────────────────
+# Project registry: one absolute path per line, no quoting.
+# Override path with WT_REGISTRY env var (for tests and CI).
 
-_load_search_paths() {
-  if [[ -n "${WT_SEARCH_PATHS:-}" ]]; then
-    IFS=':' read -ra PROJECT_SEARCH_PATHS <<< "$WT_SEARCH_PATHS"
-  elif [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/wt/config" ]]; then
-    PROJECT_SEARCH_PATHS=()
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      [[ -z "$line" || "$line" == "#"* ]] && continue
-      PROJECT_SEARCH_PATHS+=("$line")
-    done < "${XDG_CONFIG_HOME:-$HOME/.config}/wt/config"
-  else
-    PROJECT_SEARCH_PATHS=("$HOME/src" "$HOME/projects" "$HOME/repos" "$HOME/code")
-  fi
+REGISTRY_FILE="${WT_REGISTRY:-${XDG_CONFIG_HOME:-$HOME/.config}/wt/projects}"
+REGISTERED_PROJECTS=()
+
+_load_registry() {
+  REGISTERED_PROJECTS=()
+  [[ -f "$REGISTRY_FILE" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    REGISTERED_PROJECTS+=("$line")
+  done < "$REGISTRY_FILE"
 }
 
-_load_search_paths
+_register_project() {
+  local path="$1"
+  mkdir -p "$(dirname "$REGISTRY_FILE")"
+  grep -qxF "$path" "$REGISTRY_FILE" 2>/dev/null || echo "$path" >> "$REGISTRY_FILE"
+  # Reload so REGISTERED_PROJECTS stays current within this process
+  _load_registry
+}
+
+_unregister_project() {
+  local path="$1"
+  [[ -f "$REGISTRY_FILE" ]] || return 0
+  local tmp
+  tmp=$(mktemp)
+  grep -vxF "$path" "$REGISTRY_FILE" > "$tmp" || true
+  if [[ -s "$tmp" ]]; then
+    mv "$tmp" "$REGISTRY_FILE"
+  else
+    rm -f "$tmp" "$REGISTRY_FILE"
+  fi
+  _load_registry
+}
+
+_load_registry
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 # Check stdout (fd 1) — `wt list` outputs to stdout, and that's the only
@@ -126,20 +144,6 @@ slugify() {
     | tr -s ' ' '-' \
     | cut -c1-50 \
     | sed 's/-$//'
-}
-
-# Find a project directory by name — verifies it's a git repo
-find_project() {
-  local name="$1"
-  for base in "${PROJECT_SEARCH_PATHS[@]}"; do
-    local candidate="$base/$name"
-    # Accept both git directories (.git dir) and worktrees (.git file)
-    if [[ -d "$candidate/.git" ]] || [[ -f "$candidate/.git" ]]; then
-      echo "$candidate"
-      return 0
-    fi
-  done
-  return 1
 }
 
 # Get the main worktree path (the first entry in `git worktree list`)
@@ -192,15 +196,15 @@ cmd_help() {
 wt — Git Worktree Lifecycle Tool
 
 USAGE
-  wt new [--with-deps] [project] "<description>"   Create a worktree with auto-named branch
-  wt finish [--yes|-y]                             Rebase onto base, fast-forward, clean up
-  wt sync                                          Rebase onto latest base branch (from origin)
-  wt drop [--yes|-y]                               Abandon worktree without merging, clean up
-  wt pr [--draft] [--yes|-y]                       Push branch and open a GitHub PR (requires gh)
-  wt status                                        Show current worktree info
-  wt list                                          Show all active worktrees across projects
-  wt doctor                                        Check for orphaned branches/dirs, fix interactively
-  wt help                                          Show this help
+  wt new [--with-deps] "<description>"   Create a worktree with auto-named branch
+  wt finish [--yes|-y]                   Rebase onto base, fast-forward, clean up
+  wt sync                                Rebase onto latest base branch (from origin)
+  wt drop [--yes|-y]                     Abandon worktree without merging, clean up
+  wt pr [--draft] [--yes|-y]             Push branch and open a GitHub PR (requires gh)
+  wt status                              Show current worktree info
+  wt list                                Show all active worktrees across projects
+  wt doctor                              Check for orphaned branches/dirs, fix interactively
+  wt help                                Show this help
 
 EXAMPLES
   # From inside a project dir:
@@ -208,9 +212,6 @@ EXAMPLES
 
   # Copy node_modules from main checkout (zero-cost on APFS/btrfs):
   wt new --with-deps "quick fix for header"
-
-  # From anywhere, specifying project by name:
-  wt new <project> "add dark mode toggle"
 
   # Rebase onto base and clean up (run from inside a worktree):
   wt finish
@@ -234,6 +235,7 @@ EXAMPLES
   wt list
 
 NOTES
+  • Run `wt new` from inside a project — it registers the project automatically
   • Worktrees are created at <project>/.worktrees/<slug>/
   • Branch names: wt/<slug> (auto-generated from your description)
   • After `wt new`, your shell cd's into the new worktree
@@ -244,8 +246,8 @@ NOTES
   • `wt pr` rebases before pushing (same as wt sync); worktree stays alive after
   • After merging the PR on GitHub, run `wt finish` to clean up the worktree
   • `wt finish` detects a merged PR (via gh) and skips local rebase/fast-forward
-  • Configure search paths: export WT_SEARCH_PATHS=~/src:~/projects
-  • Or create ~/.config/wt/config with one directory per line
+  • Projects are tracked in ${XDG_CONFIG_HOME:-~/.config}/wt/projects (one path per line)
+  • Override registry path: export WT_REGISTRY=/path/to/registry
 HELP
 }
 
@@ -258,9 +260,8 @@ copy_node_modules() {
   cp -R "$src" "$dest"
 }
 
-# wt new [--with-deps] [project] "<description>"
+# wt new [--with-deps] "<description>"
 cmd_new() {
-  local project_arg=""
   local description=""
   local with_deps=0
 
@@ -276,23 +277,17 @@ cmd_new() {
   set -- "${args[@]}"
 
   case $# in
-    0) error "Usage: wt new [--with-deps] [project] \"<description>\"" ;;
+    0) error "Usage: wt new [--with-deps] \"<description>\"" ;;
     1) description="$1" ;;
-    2) project_arg="$1"; description="$2" ;;
-    *) error "Usage: wt new [--with-deps] [project] \"<description>\"" ;;
+    *) error "Usage: wt new [--with-deps] \"<description>\"" ;;
   esac
 
   [[ -z "$description" ]] && error "Description cannot be empty"
 
   # Resolve project root
   local project_root
-  if [[ -n "$project_arg" ]]; then
-    project_root=$(find_project "$project_arg") \
-      || error "Project '$project_arg' not found (or not a git repo) in ${PROJECT_SEARCH_PATHS[*]}"
-  else
-    project_root=$(git rev-parse --show-toplevel 2>/dev/null) \
-      || error "Not inside a git repository. Run from inside a project or pass a project name."
-  fi
+  project_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+    || error "Not inside a git repository. Run from inside a project."
 
   # If inside a worktree (not main checkout), redirect to actual project root.
   # A worktree has a .git *file*; main checkout has a .git *directory*.
@@ -301,6 +296,8 @@ cmd_new() {
       || error "Could not resolve main worktree path"
     info "Detected worktree context — using main checkout: ${project_root}"
   fi
+
+  _register_project "$project_root"
 
   local project_name
   project_name=$(basename "$project_root")
@@ -466,7 +463,7 @@ cmd_finish() {
         confirm "PR merged. Clean up worktree?" \
           || { info "Aborted."; exit 0; }
       fi
-      _cleanup_worktree "$repo_root" "$branch" "$main_wt" "$project" "$slug" "force"
+      _cleanup_worktree "$repo_root" "$branch" "$main_wt" "$project" "$slug" "force" "$project_root"
       success "Done! PR merged, worktree cleaned up."
       echo "$main_wt"
       return 0
@@ -524,7 +521,7 @@ cmd_finish() {
     fi
   fi
 
-  _cleanup_worktree "$repo_root" "$branch" "$main_wt" "$project" "$slug" "force"
+  _cleanup_worktree "$repo_root" "$branch" "$main_wt" "$project" "$slug" "force" "$project_root"
 
   success "Done! Worktree rebased, integrated, and cleaned up."
   echo "$main_wt"
@@ -602,9 +599,10 @@ cmd_drop() {
   [[ -f "$meta_file" ]] \
     || error "No ${META_FILE} found. Was this worktree created with 'wt new'?"
 
-  local description project slug branch
+  local description project project_root slug branch
   description=$(read_meta "$meta_file" "description")
   project=$(read_meta "$meta_file" "project")
+  project_root=$(read_meta "$meta_file" "project_root")
   slug=$(read_meta "$meta_file" "slug")
   branch=$(read_meta "$meta_file" "branch")
 
@@ -642,7 +640,7 @@ cmd_drop() {
   main_wt=$(get_main_worktree)
   [[ -z "$main_wt" ]] && error "Could not determine main worktree path"
 
-  _cleanup_worktree "$repo_root" "$branch" "$main_wt" "$project" "$slug" "force"
+  _cleanup_worktree "$repo_root" "$branch" "$main_wt" "$project" "$slug" "force" "$project_root"
 
   success "Dropped. Worktree removed, branch deleted (unmerged)."
   echo "$main_wt"
@@ -684,6 +682,9 @@ cmd_pr() {
   info "Description: ${description}"
   info "Base branch: ${BOLD}${base_branch}${RESET}"
 
+  [[ -n "$(git status --porcelain)" ]] \
+    && error "Uncommitted changes present. Commit or stash before 'wt pr'."
+
   if (( auto_yes == 0 )); then
     if confirm "Base branch: ${BOLD}${base_branch}${RESET} — change?"; then
       local branches=()
@@ -717,9 +718,6 @@ cmd_pr() {
       fi
     fi
   fi
-
-  [[ -n "$(git status --porcelain)" ]] \
-    && error "Uncommitted changes present. Commit or stash before 'wt pr'."
 
   git remote get-url origin &>/dev/null \
     || error "No 'origin' remote configured. 'wt pr' requires a remote to push to."
@@ -827,10 +825,10 @@ cmd_status() {
 }
 
 # Shared cleanup: remove worktree dir, delete branch, kill tmux session
-# Args: repo_root branch main_wt project slug [force]
+# Args: repo_root branch main_wt project slug [force] [project_root]
 _cleanup_worktree() {
   local repo_root="$1" branch="$2" main_wt="$3" project="$4" slug="$5"
-  local force="${6:-}"
+  local force="${6:-}" project_root="${7:-}"
 
   info "Removing worktree..."
   git -C "$main_wt" worktree remove "$repo_root" --force >&2 \
@@ -843,6 +841,21 @@ _cleanup_worktree() {
   else
     git -C "$main_wt" branch -d "$branch" >&2 \
       || warn "Could not delete branch ${branch}"
+  fi
+
+  # Auto-unregister project if no worktrees or wt/* branches remain
+  if [[ -n "$project_root" ]]; then
+    local has_wts=0
+    if [[ -d "${project_root}/${WORKTREES_DIR}" ]]; then
+      for wt_dir in "${project_root}/${WORKTREES_DIR}"/*/; do
+        [[ -d "$wt_dir" ]] && has_wts=1 && break
+      done
+    fi
+    local wt_branch_count
+    wt_branch_count=$(git -C "$project_root" branch --list 'wt/*' 2>/dev/null | wc -l | tr -d ' ')
+    if (( has_wts == 0 && wt_branch_count == 0 )); then
+      _unregister_project "$project_root"
+    fi
   fi
 
   # Kill tmux session — escape our own session first if needed
@@ -914,8 +927,12 @@ cmd_list() {
       found=1
     fi
   done < <(
-    for base in "${PROJECT_SEARCH_PATHS[@]}"; do
-      find "$base" -maxdepth 4 -name "$META_FILE" -path "*/${WORKTREES_DIR}/*" 2>/dev/null
+    for project_root in "${REGISTERED_PROJECTS[@]+"${REGISTERED_PROJECTS[@]}"}"; do
+      [[ -d "$project_root/${WORKTREES_DIR}" ]] || continue
+      for meta_file in "$project_root/${WORKTREES_DIR}"/*/"$META_FILE"; do
+        [[ -f "$meta_file" ]] || continue
+        echo "$meta_file"
+      done
     done | sort
   )
 
@@ -927,18 +944,29 @@ cmd_doctor() {
   local any_project=0
   local total_issues=0
 
-  for base in "${PROJECT_SEARCH_PATHS[@]}"; do
-    [[ -d "$base" ]] || continue
+  for project_root in "${REGISTERED_PROJECTS[@]+"${REGISTERED_PROJECTS[@]}"}"; do
+    local project_name
+    project_name=$(basename "$project_root")
+    local issues=0
+    local output=""
 
-    # Use fd 4 for the outer project loop so stdin (fd 0) stays free for confirm()
-    while IFS= read -r project_root <&4; do
-      [[ -d "$project_root/.git" ]] || continue
-      [[ -d "${project_root}/${WORKTREES_DIR}" ]] || continue
+    # ── Stale registry check ─────────────────────────────────────────────────
+    if [[ ! -d "$project_root" ]]; then
+      output+="  ${RED}✗${RESET} Stale registry entry: ${BOLD}${project_root}${RESET} (not found on disk)\n"
+      if confirm "    Remove ${project_root} from registry?"; then
+        _unregister_project "$project_root"
+        output+="  ${GREEN}✓${RESET} Removed stale registry entry\n"
+      fi
+      (( issues++ )) || true
+      echo -e "\n${BOLD}${CYAN}wt doctor — ${project_name}${RESET}"
+      echo -en "$output"
+      any_project=1
+      (( total_issues += issues )) || true
+      continue
+    fi
 
-      local project_name
-      project_name=$(basename "$project_root")
-      local issues=0
-      local output=""
+    [[ -d "$project_root/.git" ]] || continue
+    [[ -d "${project_root}/${WORKTREES_DIR}" ]] || continue
 
       # ── Check 1: Orphaned wt/* branches ─────────────────────────────────────
       # A wt/* branch exists but no matching .worktrees/<slug>/ dir.
@@ -1052,23 +1080,22 @@ cmd_doctor() {
         (( issues++ )) || true
       fi
 
-      # ── Print section ────────────────────────────────────────────────────────
-      if (( issues > 0 )) || [[ "$any_project" -eq 0 ]]; then
-        echo -e "\n${BOLD}${CYAN}wt doctor — ${project_name}${RESET}"
-        if (( issues == 0 )); then
-          echo -e "  ${GREEN}✓${RESET} all good"
-        else
-          echo -en "$output"
-        fi
-        any_project=1
+    # ── Print section ─────────────────────────────────────────────────────────
+    if (( issues > 0 )) || [[ "$any_project" -eq 0 ]]; then
+      echo -e "\n${BOLD}${CYAN}wt doctor — ${project_name}${RESET}"
+      if (( issues == 0 )); then
+        echo -e "  ${GREEN}✓${RESET} all good"
+      else
+        echo -en "$output"
       fi
-      (( total_issues += issues )) || true
+      any_project=1
+    fi
+    (( total_issues += issues )) || true
 
-    done 4< <(find "$base" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
   done
 
   if (( any_project == 0 )); then
-    info "No projects found in ${PROJECT_SEARCH_PATHS[*]}"
+    info "No projects found in registry."
     return 0
   fi
 

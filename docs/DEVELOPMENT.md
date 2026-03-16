@@ -79,19 +79,24 @@ slug=$(echo "$desc" \
 
 **Go/Rust note:** Use a regex or char filter. Watch out for Unicode — the bash version uses `tr '[:upper:]' '[:lower:]'` which is locale-aware; explicit ASCII lowercase is safer and matches actual usage.
 
-### Configuration system
+### Registry system
 
 ```
-Priority 1: WT_SEARCH_PATHS env var (colon-separated)
-Priority 2: ${XDG_CONFIG_HOME:-~/.config}/wt/config (one path per line, # comments, blank lines ok)
-Priority 3: ~/src  ~/projects  ~/repos  ~/code
+Registry file: ${XDG_CONFIG_HOME:-~/.config}/wt/projects
+Override:      WT_REGISTRY env var (for tests and CI)
+Format:        one absolute project path per line, no quoting
 ```
 
-The search paths tell `wt` where to look for projects by name (`wt new myapp "desc"`) and where to scan for active worktrees (`wt list`, `wt doctor`).
+The registry tells `wt` which projects are active. `wt new` registers each project root automatically. `wt list` and `wt doctor` read the registry — no manual path configuration needed.
 
-Implemented as `_load_search_paths()` called at startup.
+Auto-unregister: when `_cleanup_worktree` runs, if `.worktrees/` is empty/absent AND no `wt/*` branches remain, the project is removed from the registry.
 
-**Go/Rust note:** Simple struct with a `Vec<PathBuf>` field. Load at startup. Expand `~` to `$HOME` (Go: `os.UserHomeDir()`; Rust: `dirs::home_dir()`). For config file path, use `os.UserConfigDir()` / `dirs::config_dir()`.
+Functions:
+- `_load_registry()` — reads file into `REGISTERED_PROJECTS` array; called at startup
+- `_register_project(path)` — appends path if not present (idempotent)
+- `_unregister_project(path)` — removes path; deletes file if empty
+
+**Go/Rust note:** Load at startup into `Vec<PathBuf>`. File path via `os.UserConfigDir()` / `dirs::config_dir()`. No `~` expansion needed — paths are stored as absolute.
 
 ### Shell wrapper (the cd trick)
 
@@ -136,7 +141,7 @@ fi
 |---|---|---|
 | `git` | All operations | Requires 2.5+ for `git worktree` |
 | `tmux` | Session kill on cleanup; `display-message -p '#S'` | Optional — all tmux paths are guarded by `[[ -n "${TMUX:-}" ]]` |
-| `find` | `wt list`, `wt doctor` — scan for `.wt-meta` files | POSIX `find` — no GNU extensions used |
+| `find` | `wt doctor` — inner checks only (branch/worktree loops) | POSIX `find` — no GNU extensions used |
 | `date` | `human_age()` — timestamp to seconds | GNU `date -d` or BSD `date -j -f` |
 | `sed`, `tr`, `cut` | `slugify()`, `read_meta()` | POSIX |
 
@@ -146,23 +151,24 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 
 ## Command implementations
 
-### `wt new [project] "<description>"`
+### `wt new "<description>"`
 
 ```
-1. Parse args: 0 args → error; 1 arg → description (use git rev-parse --show-toplevel); 2 args → project name + description
-2. If project arg: find_project() — search each WT_SEARCH_PATHS entry for $base/$name/.git (dir or file)
+1. Parse args: 0 args → error; 1 arg → description (use git rev-parse --show-toplevel); 2+ args → error
+2. Resolve project root: git rev-parse --show-toplevel
 3. Resolve main worktree: if inside a worktree (.git is a file), call get_main_worktree() to get the actual root
-4. Slugify description → branch = "wt/<slug>", worktree_path = "<project_root>/.worktrees/<slug>"
-5. Conflict checks: worktree dir exists? → error; branch exists? → error
-6. Capture base_branch = $(git symbolic-ref --short HEAD)
-7. mkdir -p <project_root>/.worktrees
-8. Add ".worktrees/" to <project_root>/.git/info/exclude (if not present)
-9. git worktree add <worktree_path> -b <branch>
-10. Write .wt-meta
-11. Add ".wt-meta" to GIT_COMMON_DIR/info/exclude (if not present)
-12. Detect package manager: uv.lock → uv, poetry.lock → poetry, requirements.txt/pyproject.toml → pip; package.json + pnpm-lock.yaml → pnpm, yarn.lock → yarn, else → npm
-13. If package manager detected: warn + prompt to install
-14. Print worktree_path to stdout (shell wrapper uses this to cd)
+4. _register_project(project_root)
+5. Slugify description → branch = "wt/<slug>", worktree_path = "<project_root>/.worktrees/<slug>"
+6. Conflict checks: worktree dir exists? → error; branch exists? → error
+7. Capture base_branch = $(git symbolic-ref --short HEAD)
+8. mkdir -p <project_root>/.worktrees
+9. Add ".worktrees/" to <project_root>/.git/info/exclude (if not present)
+10. git worktree add <worktree_path> -b <branch>
+11. Write .wt-meta
+12. Add ".wt-meta" to GIT_COMMON_DIR/info/exclude (if not present)
+13. Detect package manager: uv.lock → uv, poetry.lock → poetry, requirements.txt/pyproject.toml → pip; package.json + pnpm-lock.yaml → pnpm, yarn.lock → yarn, else → npm
+14. If package manager detected: warn + prompt to install
+15. Print worktree_path to stdout (shell wrapper uses this to cd)
 ```
 
 ### `wt finish [--yes|-y]`
@@ -219,9 +225,15 @@ Key difference from `wt finish`: rebases onto `origin/<base_branch>` (not local)
 ### `_cleanup_worktree` (shared)
 
 ```
+Args: repo_root branch main_wt project slug [force] [project_root]
+
 1. git -C <main_wt> worktree remove <repo_root> --force
 2. git -C <main_wt> branch -D <branch>  (force=true → -D; force=false → -d)
-3. [if TMUX]
+3. Auto-unregister (if project_root provided):
+   - Check if <project_root>/.worktrees/ is empty or absent
+   - Check if no wt/* branches remain: git branch --list 'wt/*' | wc -l == 0
+   - If both: _unregister_project(project_root)
+4. [if TMUX]
    a. session_name = "<project>/<slug>" (dots → underscores)
    b. if tmux session exists:
       - if current session == session_name: switch to "<project>" session first (else warn, return)
@@ -231,8 +243,9 @@ Key difference from `wt finish`: rebases onto `origin/<base_branch>` (not local)
 ### `wt list`
 
 ```
-1. For each search path in PROJECT_SEARCH_PATHS:
-   find <base> -maxdepth 4 -name ".wt-meta" -path "*/.worktrees/*" | sort
+1. For each project_root in REGISTERED_PROJECTS:
+   - skip if <project_root>/.worktrees/ doesn't exist (stale entry)
+   - glob <project_root>/.worktrees/*/.wt-meta | sort
 2. For each .wt-meta found:
    - Read: branch, base_branch, description, project, created
    - Skip if branch is empty or git rev-parse fails (stale worktree)
@@ -249,9 +262,10 @@ Key difference from `wt finish`: rebases onto `origin/<base_branch>` (not local)
 ### `wt doctor`
 
 ```
-For each search path:
-  For each direct subdir of <base> (find -maxdepth 1 -mindepth 1 -type d):
-    Skip if: not a git repo (.git dir missing) OR no .worktrees/ dir
+For each project_root in REGISTERED_PROJECTS:
+  Stale registry check:
+    If project_root doesn't exist on disk → report + offer _unregister_project → continue
+  Skip if: not a git repo (.git dir missing) OR no .worktrees/ dir
 
     Check 1 — Orphaned wt/* branches:
       git branch --list 'wt/*' → for each branch, check if .worktrees/<slug>/ exists
@@ -278,7 +292,7 @@ For each search path:
     Print result per project (only projects with issues unless it's the first)
 ```
 
-**fd trick:** The outer project loop uses `fd 4` and inner branch/worktree loops use `fd 5`. This keeps `fd 0` (stdin) free for `confirm()` interactive prompts. Go/Rust doesn't need this — use an iterator + synchronous stdin read.
+**fd trick:** Inner branch/worktree loops use `fd 5` to keep `fd 0` (stdin) free for `confirm()`. The outer project loop iterates the registry array (`for project_root in "${REGISTERED_PROJECTS[@]+"${REGISTERED_PROJECTS[@]}"}"`— the `+` guard prevents bash 3.2 `set -u` unbound-variable errors on empty arrays) and doesn't need a separate fd. Go/Rust doesn't need this — use an iterator + synchronous stdin read.
 
 ### `human_age()` — cross-platform timestamp→age
 
@@ -303,9 +317,9 @@ git worktree list --porcelain | awk '/^worktree / { if (first=="") first=$2 } EN
 
 The first entry in `git worktree list --porcelain` is always the main worktree. Works even when called from inside a linked worktree.
 
-### `find_project()`
+### `_load_registry()` / `_register_project()` / `_unregister_project()`
 
-Searches each `PROJECT_SEARCH_PATHS` entry for `$base/$name` where `.git` is either a directory (main checkout) or a file (linked worktree — unusual but valid). Returns the first match.
+The registry is a plain text file (`~/.config/wt/projects`, one path per line). `_load_registry()` reads it into `REGISTERED_PROJECTS` at startup. `_register_project(path)` appends a path if not present (idempotent, using `grep -qxF`). `_unregister_project(path)` removes it (grep -v + temp file swap); deletes the registry file if it becomes empty.
 
 ---
 
@@ -325,14 +339,14 @@ Searches each `PROJECT_SEARCH_PATHS` entry for `$base/$name` where `.git` is eit
 
 | # | Edge case | Handling |
 |---|---|---|
-| 1 | `wt new` from inside a worktree | Detect `.git` file vs dir; redirect to main checkout via `get_main_worktree()` |
+| 1 | `wt new` from inside a worktree | Detect `.git` file vs dir; redirect to main checkout via `get_main_worktree()`; register main checkout path |
 | 2 | Base branch checked out in main worktree during ff | Can't `git fetch . HEAD:<base>` (ref locked); fall back to `git -C $main_wt merge --ff-only` |
 | 3 | `wt finish`/`drop` from same tmux session being killed | Switch to project main session first; if no other session exists, warn and skip kill |
 | 4 | `wt new` with apostrophes in description | Slugify strips them; `.wt-meta` preserves them verbatim (no shell quoting) |
 | 5 | `wt list` with dirty worktrees | Color the dirty count yellow; `.wt-meta` excluded via `info/exclude` so it doesn't count |
 | 6 | `wt doctor` on repos that never used `wt` | Skip repos without a `.worktrees/` dir |
 | 7 | `read_meta` on missing key | Returns empty string via `|| true` — never exits non-zero |
-| 8 | `wt list` performance | `-maxdepth 4` on find — `.wt-meta` is always at exactly depth 4 from search base |
+| 8 | `wt list` performance | Registry-based glob — no recursive find; O(registered projects × worktrees) |
 | 9 | `git branch -d` after rebase | Branch guaranteed linear, but use `-D` always — avoids failure when main_wt is on a different branch |
 | 10 | `git branch --list` output format | Strips `"  "` prefix (non-current), `"* "` (current), `"+ "` (checked out in another worktree — skip) |
 
@@ -480,13 +494,13 @@ If `base_branch` is checked out in the main worktree, falls back to `git -C $mai
 
 Extracted `wt` into a standalone public GitHub repo. Goal: anyone can clone and run in 2 minutes.
 
-23. **Configurable search paths** — Replaced hardcoded paths with a three-tier config system: `WT_SEARCH_PATHS` env var → `~/.config/wt/config` → defaults. Implemented as `_load_search_paths()` called at startup.
+23. **Configurable search paths** — Replaced hardcoded paths with a three-tier config system: `WT_SEARCH_PATHS` env var → `~/.config/wt/config` → defaults. Implemented as `_load_search_paths()` called at startup. (Superseded in v10.)
 24. **Cross-platform date parsing** — `human_age()` now tries GNU `date -d` first (Linux), falls back to BSD `date -j -f` (macOS).
 25. **`claude_running_in_session()` stubbed to `false`** — Removed personal tmux option check. Function now always returns false. Documented as an override hook.
 26. **Removed personal doc references** — Lines referencing local dev files removed from header and help output. README replaces the usage guide.
 27. **Python package manager detection improved** — Added `uv.lock` → `uv` and `poetry.lock` → `poetry` detection before the `pip` fallback. Order: `uv.lock → poetry.lock → requirements.txt → pyproject.toml`.
 28. **Shell wrapper documented for both zsh and bash** — Header now shows both `.zshrc` and `.bashrc` forms.
-29. **`wt-test` switched to `WT_SEARCH_PATHS`** — Test suite now uses `WT_SEARCH_PATHS="$test_base" bash "$WT"` instead of `HOME="$FAKE_HOME" bash "$WT"`.
+29. **`wt-test` switched to `WT_SEARCH_PATHS`** — Test suite now uses `WT_SEARCH_PATHS="$test_base" bash "$WT"` instead of `HOME="$FAKE_HOME" bash "$WT"`. (Superseded in v10.)
 30. **New tests added (69 → 71):** config env var; `human_age()` output format validation.
 31. **CI added** — `.github/workflows/test.yml` runs `bin/wt-test` on `macos-latest` and `ubuntu-latest` on every push/PR. macOS step installs bash 4+ via brew.
 32. **Repo structure finalized:**
@@ -507,6 +521,18 @@ Extracted `wt` into a standalone public GitHub repo. Goal: anyone can clone and 
 **Fix:** Add `--yes`/`-y` flag to both commands. When set, all `confirm()` calls are bypassed. The dirty-file check in `cmd_finish` is `error()` not `confirm()`, so it is intentionally **not** skipped — never auto-merge dirty work. The dirty-file check in `cmd_drop` **is** skipped — deliberately dropping dirty work is the point of `--yes` on drop.
 
 33. **`wt finish --yes` / `wt drop --yes`** — Non-interactive flag skips confirmation prompts. Local `auto_yes=0` variable parsed at top of each function; `confirm()` calls wrapped in `if (( auto_yes == 0 ))`. Tests expanded from 79 → 95.
+
+### v10: Registry-based worktree discovery (2026-03-15)
+
+Replaced `PROJECT_SEARCH_PATHS` / `WT_SEARCH_PATHS` / `~/.config/wt/config` with a project registry. Removes the need for any manual configuration.
+
+34. **Registry replaces search paths** — `wt new` registers each project root in `~/.config/wt/projects`. `wt list` and `wt doctor` iterate the registry. No `find` traversal, no hardcoded paths, no config files.
+35. **Auto-unregister** — `_cleanup_worktree` checks if `.worktrees/` is empty and no `wt/*` branches remain after cleanup; if so, calls `_unregister_project`. Projects are removed automatically when fully cleaned up.
+36. **Stale entry detection** — `wt list` silently skips registry entries whose directories don't exist. `wt doctor` reports stale entries and offers to remove them.
+37. **Two-arg `wt new` removed** — `wt new <project> "<desc>"` form deleted. Users must `cd` into the repo. Project names were ambiguous (basename collisions, no canonical location).
+38. **`wt pr` dirty check moved earlier** — Dirty check now fires before the interactive base-branch prompt, consistent with `wt finish`/`wt drop`.
+39. **Tests switched to `WT_REGISTRY`** — All test invocations now use `WT_REGISTRY="$registry_file"` pointing at a temp file. Tests expanded from 95 → 156.
+40. **Bash 3.2 empty-array fix** — `"${arr[@]}"` with `set -u` throws "unbound variable" on bash <4.4 (macOS system bash 3.2) when the array is empty. Fixed with `"${arr[@]+"${arr[@]}"}"` guard in `cmd_list` and `cmd_doctor`. Tests: 156 → 158.
 
 ---
 
@@ -563,7 +589,6 @@ The bash `wt-test` has 71 tests as of v8. Each maps to a unit/integration test i
 | Test section | What it tests |
 |---|---|
 | wt help | command dispatch + help output |
-| config — WT_SEARCH_PATHS | env var overrides default search paths |
 | wt new — basic creation | dir created, meta written, stdout=path |
 | wt new — .wt-meta contents | all 7 fields written correctly |
 | wt new — single quotes | slugify strips apostrophes; description preserved verbatim |
@@ -573,8 +598,7 @@ The bash `wt-test` has 71 tests as of v8. Each maps to a unit/integration test i
 | wt list — no ANSI when piped | tty check works |
 | wt new — conflicts | duplicate worktree/branch → error |
 | wt new — from inside worktree | redirects to main checkout |
-| wt new — project-name arg | two-arg form from outside repo |
-| wt new — nonexistent project | clear error message |
+| wt new — two-arg form errors | removed feature errors cleanly |
 | wt finish — dirty check | blocks on uncommitted changes |
 | wt finish — from main checkout | error message |
 | wt drop — dirty double-confirm | two prompts for dirty worktree |
@@ -592,6 +616,14 @@ The bash `wt-test` has 71 tests as of v8. Each maps to a unit/integration test i
 | wt doctor — corrupt meta | detect only |
 | wt doctor — missing excludes | detect + fix |
 | wt doctor — stale registration | detect + fix |
+| wt list — stale registry entry | silently skipped |
+| wt doctor — stale registry entry | detect + offer to remove |
+| registry — project registered after new | registry file written |
+| registry — unregister after drop | auto-unregister on last drop |
+| registry — unregister after finish | auto-unregister on last finish |
+| registry — not unregistered if branches remain | orphan branch prevents removal |
+| registry — auto-unregister both conditions | fires when empty + no branches |
+| wt list — missing registry file (fresh install) | no crash, "No active worktrees" |
 
 ---
 

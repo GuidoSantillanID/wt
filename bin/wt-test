@@ -6,6 +6,8 @@
 #   --keep    Preserve the temp dir on failure (for debugging)
 #
 # Creates a real git repo in /tmp, runs all commands against it, cleans up.
+# Run with stdin closed to prevent interactive prompts from blocking:
+#   bash bin/wt-test < /dev/null
 # =============================================================================
 
 set -euo pipefail
@@ -69,8 +71,8 @@ assert_file_exists()     { [[ -f "$2" ]] && pass "$1" || fail "$1 (missing: $2)"
 assert_dir_exists()      { [[ -d "$2" ]] && pass "$1" || fail "$1 (missing: $2)"; }
 assert_dir_not_exists()  { [[ ! -d "$2" ]] && pass "$1" || fail "$1 (still exists: $2)"; }
 
-# Run wt with WT_SEARCH_PATHS pointing at our test base directory
-wt() { WT_SEARCH_PATHS="$test_base" bash "$WT" "$@"; }
+# Run wt with WT_REGISTRY pointing at our test registry file
+wt() { WT_REGISTRY="$registry_file" bash "$WT" "$@"; }
 
 # ─── Setup ───────────────────────────────────────────────────────────────────
 
@@ -78,9 +80,12 @@ TMPROOT=$(mktemp -d /tmp/wt-test-XXXXXX)
 # Resolve symlinks (macOS /tmp → /private/tmp) so path comparisons work
 TMPROOT=$(cd "$TMPROOT" && pwd -P)
 
-# test_base: single search path containing our test project
+# test_base: directory holding our test project
 test_base="${TMPROOT}/projects"
 mkdir -p "$test_base"
+
+# registry_file: isolated registry for all test invocations
+registry_file="${TMPROOT}/wt-registry"
 
 # Create test git repo inside test_base
 REPO="${test_base}/test-project"
@@ -119,13 +124,13 @@ assert_contains "wt finish" "wt finish" "$out"
 assert_contains "wt drop"  "wt drop"  "$out"
 assert_contains "wt list"  "wt list"  "$out"
 
-# ── Config: WT_SEARCH_PATHS ──────────────────────────────────────────────────
-section "config — WT_SEARCH_PATHS env var"
-# wt list uses WT_SEARCH_PATHS — verify it finds nothing in an unrelated dir
-empty_base=$(mktemp -d /tmp/wt-empty-XXXXXX)
-list_empty=$(WT_SEARCH_PATHS="$empty_base" bash "$WT" list 2>&1 || true)
-assert_contains "empty path: no worktrees found" "No active worktrees" "$list_empty"
-rm -rf "$empty_base"
+# ── wt list — empty registry (no wt new yet) ────────────────────────────────
+section "wt list — no crash with missing registry file"
+# Simulate fresh install: registry file does not exist yet
+_empty_reg=$(mktemp -u)  # generate a path but don't create the file
+list_empty=$(WT_REGISTRY="$_empty_reg" bash "$WT" list 2>&1)
+assert_contains     "shows 'no worktrees' when registry absent" "No active worktrees" "$list_empty"
+assert_not_contains "no unbound variable error"                 "unbound variable"    "$list_empty"
 
 # ── wt new ──────────────────────────────────────────────────────────────────
 section "wt new — basic creation"
@@ -202,18 +207,11 @@ assert_eq          "creates in main checkout, not nested" "$expected3" "$stdout3
 assert_dir_exists  "worktree exists at correct path"      "$expected3"
 assert_dir_not_exists "not nested inside current worktree" "${WT_PATH}/.worktrees/new-from-inside-worktree"
 
-# ── wt new — project-name arg ────────────────────────────────────────────────
-section "wt new — project-name arg (from outside repo)"
+# ── wt new — two-arg form removed ────────────────────────────────────────────
+section "wt new — two-arg form errors"
 cd "$TMPROOT"
-WT_PATH_P="${REPO}/.worktrees/task-via-project-name"
-stdout_p=$(wt new test-project "task via project name" 2>/dev/null)
-assert_eq         "stdout is worktree path"  "$WT_PATH_P" "$stdout_p"
-assert_dir_exists "worktree dir created"     "$WT_PATH_P"
-assert_contains   "project name in meta"     "project=test-project" "$(cat "${WT_PATH_P}/.wt-meta")"
-
-section "wt new — nonexistent project error"
-out=$(wt new fake-project "something" 2>&1 || true)
-assert_contains   "error mentions not found" "not found" "$out"
+out=$(wt new test-project "task via project name" 2>&1 || true)
+assert_contains "two-arg form errors" "Usage:" "$out"
 
 # ── wt finish — safety checks ────────────────────────────────────────────────
 section "wt finish — dirty check"
@@ -354,7 +352,7 @@ git -C "$WT_PATH_FM" commit -q -m "PR merged test commit"
 cd "$WT_PATH_FM"
 rm -f "${MOCK_BIN_FIN}/gh-calls.log"
 _tmp_fm=$(mktemp)
-stdout_fin_m=$(printf "y\n" | PATH="${MOCK_BIN_FIN}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" finish 2>"$_tmp_fm")
+stdout_fin_m=$(printf "y\n" | PATH="${MOCK_BIN_FIN}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" finish 2>"$_tmp_fm")
 out_fin_m=$(cat "$_tmp_fm"); rm -f "$_tmp_fm"
 assert_contains       "reports PR merged"     "PR merged"  "$out_fin_m"
 assert_contains       "reports Done"          "Done!"      "$out_fin_m"
@@ -384,7 +382,7 @@ MOCKEOF_FIN_O
 chmod +x "${MOCK_BIN_FIN}/gh"
 cd "$WT_PATH_FO"
 _tmp_fo=$(mktemp)
-PATH="${MOCK_BIN_FIN}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" finish 2>"$_tmp_fo" || true
+PATH="${MOCK_BIN_FIN}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" finish 2>"$_tmp_fo" || true
 out_fin_o=$(cat "$_tmp_fo"); rm -f "$_tmp_fo"
 assert_contains "errors on open PR" "still open" "$out_fin_o"
 git -C "$REPO" worktree remove "$WT_PATH_FO" --force 2>/dev/null || true
@@ -408,7 +406,7 @@ MOCKEOF_FIN_M
 chmod +x "${MOCK_BIN_FIN}/gh"
 cd "$WT_PATH_FMY"
 _tmp_fmy=$(mktemp)
-stdout_fin_my=$(PATH="${MOCK_BIN_FIN}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" finish --yes 2>"$_tmp_fmy")
+stdout_fin_my=$(PATH="${MOCK_BIN_FIN}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" finish --yes 2>"$_tmp_fmy")
 out_fin_my=$(cat "$_tmp_fmy"); rm -f "$_tmp_fmy"
 assert_contains       "cleanup succeeds"      "Done!"           "$out_fin_my"
 assert_dir_not_exists "worktree removed"      "$WT_PATH_FMY"
@@ -518,10 +516,6 @@ if [[ -d "${REPO}/.worktrees/new-from-inside-worktree" ]]; then
   git -C "$REPO" worktree remove "${REPO}/.worktrees/new-from-inside-worktree" --force 2>/dev/null || true
   git -C "$REPO" branch -D "wt/new-from-inside-worktree" 2>/dev/null || true
 fi
-if [[ -d "$WT_PATH_P" ]]; then
-  git -C "$REPO" worktree remove "$WT_PATH_P" --force 2>/dev/null || true
-  git -C "$REPO" branch -D "wt/task-via-project-name" 2>/dev/null || true
-fi
 # "No active worktrees" goes to stderr (via info()), so capture both
 list_out=$(wt list 2>&1)
 assert_contains "shows 'no worktrees' message" "No active worktrees" "$list_out"
@@ -572,6 +566,11 @@ assert_contains "reports missing exclude entry" ".worktrees/" "$out"
 printf "y\n" | wt doctor 2>/dev/null || true
 assert_contains ".worktrees/ restored in exclude" ".worktrees/" "$(cat "$EXCLUDE_FILE")"
 
+section "wt list — stale registry entry skipped silently"
+echo "/nonexistent/stale/path/in/registry" >> "$registry_file"
+list_stale=$(wt list 2>&1 || true)
+assert_not_contains "stale path not shown in list output" "/nonexistent/stale/path" "$list_stale"
+
 section "wt doctor — stale git worktree registration detected"
 # Simulate a stale registration by creating and then manually removing a worktree dir
 STALE_PATH="${REPO}/.worktrees/stale-wt"
@@ -583,6 +582,14 @@ assert_contains "reports stale registration" "stale" "$out"
 printf "y\n" | wt doctor 2>/dev/null || true
 stale_branch=$(git -C "$REPO" rev-parse --verify "wt/stale-wt" 2>/dev/null || echo "gone")
 assert_eq "stale branch cleaned up after fix" "gone" "$stale_branch"
+
+section "wt doctor — stale registry entry detected and removed"
+# The /nonexistent/stale/path/in/registry entry added earlier should still be present
+out=$(printf "n\n" | wt doctor 2>&1) || true
+assert_contains "reports stale registry entry" "Stale registry" "$out"
+# Fix it
+printf "y\n" | wt doctor 2>/dev/null || true
+assert_not_contains "stale entry removed from registry" "/nonexistent/stale/path" "$(cat "$registry_file" 2>/dev/null)"
 
 # ── wt new --with-deps ───────────────────────────────────────────────────────
 section "wt new --with-deps — unknown flag error"
@@ -664,21 +671,14 @@ git -C "$REPO" rm -q requirements.txt
 git -C "$REPO" commit -q -m "remove requirements.txt"
 git -C "$REPO" checkout -q dev
 
-section "wt new --with-deps — flag in any position"
+section "wt new --with-deps — flag before description"
 mkdir -p "${REPO}/node_modules"
 cd "$REPO"
-# Flag before project arg
-WT_FP="${REPO}/.worktrees/flag-pos-before"
-stdout_fp=$(wt new --with-deps test-project "flag pos before" 2>/dev/null)
-assert_eq "flag before project arg works" "$WT_FP" "$stdout_fp"
+WT_FP="${REPO}/.worktrees/flag-pos-test"
+stdout_fp=$(wt new --with-deps "flag pos test" 2>/dev/null)
+assert_eq "flag before desc works" "$WT_FP" "$stdout_fp"
 git -C "$REPO" worktree remove "${WT_FP}" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/flag-pos-before" 2>/dev/null || true
-# Flag between project and description
-WT_FB="${REPO}/.worktrees/flag-pos-between"
-stdout_fb=$(wt new test-project --with-deps "flag pos between" 2>/dev/null)
-assert_eq "flag between project and desc works" "$WT_FB" "$stdout_fb"
-git -C "$REPO" worktree remove "${WT_FB}" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/flag-pos-between" 2>/dev/null || true
+git -C "$REPO" branch -D "wt/flag-pos-test" 2>/dev/null || true
 rm -rf "${REPO}/node_modules"
 
 # ─── wt status ───────────────────────────────────────────────────────────────
@@ -737,7 +737,7 @@ git -C "$WT_PATH_PR" commit -q -m "pr test commit"
 cd "$WT_PATH_PR"
 _gh_env=$(mktemp)
 printf 'command() { [[ "$1 $2" == "-v gh" ]] && return 1; builtin command "$@"; }\n' > "$_gh_env"
-out=$(BASH_ENV="$_gh_env" WT_SEARCH_PATHS="$test_base" bash "$WT" pr 2>&1 || true)
+out=$(BASH_ENV="$_gh_env" WT_REGISTRY="$registry_file" bash "$WT" pr 2>&1 || true)
 rm -f "$_gh_env"
 assert_contains "errors without gh" "gh CLI required" "$out"
 
@@ -775,7 +775,7 @@ git -C "$WT_PATH_PR" remote add origin "$BARE"
 
 cd "$WT_PATH_PR"
 _tmp_pr=$(mktemp)
-stdout_pr=$(PATH="${MOCK_BIN}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" pr --yes 2>"$_tmp_pr")
+stdout_pr=$(PATH="${MOCK_BIN}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" pr --yes 2>"$_tmp_pr")
 out_pr=$(cat "$_tmp_pr"); rm -f "$_tmp_pr"
 assert_contains "PR URL on stdout"   "https://github.com"  "$stdout_pr"
 assert_contains "reports PR created" "PR created"          "$out_pr"
@@ -788,7 +788,7 @@ assert_contains "body from commits"    "pr test commit"      "$gh_log"
 section "wt pr --draft — passes draft flag to gh"
 rm -f "${MOCK_BIN}/gh-calls.log"
 cd "$WT_PATH_PR"
-PATH="${MOCK_BIN}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" pr --draft --yes 2>/dev/null || true
+PATH="${MOCK_BIN}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" pr --draft --yes 2>/dev/null || true
 gh_log=$(cat "${MOCK_BIN}/gh-calls.log" 2>/dev/null || echo "")
 assert_contains "draft flag passed" "--draft" "$gh_log"
 
@@ -802,7 +802,7 @@ MOCKEOF2
 chmod +x "${MOCK_BIN}/gh"
 cd "$WT_PATH_PR"
 _tmp_pr2=$(mktemp)
-stdout_pr2=$(PATH="${MOCK_BIN}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" pr --yes 2>"$_tmp_pr2")
+stdout_pr2=$(PATH="${MOCK_BIN}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" pr --yes 2>"$_tmp_pr2")
 out_pr2=$(cat "$_tmp_pr2"); rm -f "$_tmp_pr2"
 assert_contains "shows existing PR URL" "https://github.com" "$stdout_pr2"
 assert_contains "reports already exists" "already exists"    "$out_pr2"
@@ -847,7 +847,7 @@ chmod +x "${MOCK_BIN2}/gh"
 cd "$WT_PATH_BASE"
 # Input: "y" to change base, then pick "2" (feature-x, sorted after dev), then "y" to confirm PR
 _tmp_base=$(mktemp)
-stdout_base=$(printf 'y\n2\ny\n' | PATH="${MOCK_BIN2}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" pr 2>"$_tmp_base" || true)
+stdout_base=$(printf 'y\n2\ny\n' | PATH="${MOCK_BIN2}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" pr 2>"$_tmp_base" || true)
 out_base=$(cat "$_tmp_base"); rm -f "$_tmp_base"
 gh_log2=$(cat "${MOCK_BIN2}/gh-calls.log" 2>/dev/null || echo "")
 assert_contains "base changed in gh call"  "--base feature-x"   "$gh_log2"
@@ -861,7 +861,7 @@ cd "$WT_PATH_BASE"
 # Reset .wt-meta base back to dev
 sed -i.bak "s/^base_branch=.*/base_branch=dev/" "${WT_PATH_BASE}/.wt-meta" && rm -f "${WT_PATH_BASE}/.wt-meta.bak"
 _tmp_yes=$(mktemp)
-PATH="${MOCK_BIN2}:${PATH}" WT_SEARCH_PATHS="$test_base" bash "$WT" pr --yes 2>"$_tmp_yes" || true
+PATH="${MOCK_BIN2}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" pr --yes 2>"$_tmp_yes" || true
 out_yes=$(cat "$_tmp_yes"); rm -f "$_tmp_yes"
 assert_not_contains "no change-base prompt with --yes" "change?" "$out_yes"
 gh_log3=$(cat "${MOCK_BIN2}/gh-calls.log" 2>/dev/null || echo "")
@@ -870,6 +870,65 @@ assert_contains "uses original base with --yes" "--base dev" "$gh_log3"
 git -C "$REPO" worktree remove "$WT_PATH_BASE" --force 2>/dev/null || true
 git -C "$REPO" branch -D "wt/base-change-test" 2>/dev/null || true
 rm -rf "$MOCK_BIN2" "$BARE2"
+
+# ─── registry ────────────────────────────────────────────────────────────────
+
+section "registry — project registered after wt new"
+# REPO was registered by the very first wt new call above
+assert_contains "registry contains REPO" "$REPO" "$(cat "$registry_file" 2>/dev/null)"
+
+section "registry — wt new with two args errors"
+cd "$REPO"
+out=$(wt new "project-name" "desc" 2>&1 || true)
+assert_contains "two-arg form errors" "Usage:" "$out"
+
+# Use a fresh isolated project to test unregister behavior
+REG_PROJ="${TMPROOT}/reg-proj"
+mkdir -p "$REG_PROJ"
+git -C "$REG_PROJ" init -q
+git -C "$REG_PROJ" config user.email "test@test.com"
+git -C "$REG_PROJ" config user.name "Test"
+echo "init" > "$REG_PROJ/README.md"
+git -C "$REG_PROJ" add README.md
+git -C "$REG_PROJ" commit -q -m "init"
+
+section "registry — project unregistered after wt drop (no branches remain)"
+cd "$REG_PROJ"
+wt new "drop-cleanup" 2>/dev/null
+assert_contains "registry has reg-proj after new" "$REG_PROJ" "$(cat "$registry_file")"
+cd "$REG_PROJ/.worktrees/drop-cleanup"
+wt drop --yes 2>/dev/null
+assert_not_contains "registry cleared after last drop" "$REG_PROJ" "$(cat "$registry_file" 2>/dev/null)"
+
+section "registry — project unregistered after wt finish (no branches remain)"
+cd "$REG_PROJ"
+wt new "finish-cleanup" 2>/dev/null
+REG_FINISH="${REG_PROJ}/.worktrees/finish-cleanup"
+echo "work" > "${REG_FINISH}/work.txt"
+git -C "$REG_FINISH" add work.txt
+git -C "$REG_FINISH" commit -q -m "finish cleanup test"
+cd "$REG_FINISH"
+wt finish --yes 2>/dev/null
+assert_not_contains "registry cleared after last finish" "$REG_PROJ" "$(cat "$registry_file" 2>/dev/null)"
+
+section "registry — project NOT unregistered if wt/* branches remain"
+cd "$REG_PROJ"
+wt new "orphan-test" 2>/dev/null
+# Create an orphaned wt/* branch manually (no worktree dir)
+git -C "$REG_PROJ" branch wt/orphan-stays
+cd "$REG_PROJ/.worktrees/orphan-test"
+wt drop --yes 2>/dev/null  # .worktrees/ empty, but wt/orphan-stays still exists
+assert_contains "registry preserved when branches remain" "$REG_PROJ" "$(cat "$registry_file" 2>/dev/null)"
+# Clean up the orphaned branch
+git -C "$REG_PROJ" branch -D wt/orphan-stays 2>/dev/null
+
+section "registry — auto-unregister fires when both conditions met"
+# REG_PROJ is still registered (orphan-stays prevented unregister above)
+cd "$REG_PROJ"
+wt new "final-cleanup" 2>/dev/null
+cd "$REG_PROJ/.worktrees/final-cleanup"
+wt drop --yes 2>/dev/null  # empty .worktrees/ + no wt/* branches now
+assert_not_contains "auto-unregister fired" "$REG_PROJ" "$(cat "$registry_file" 2>/dev/null)"
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
