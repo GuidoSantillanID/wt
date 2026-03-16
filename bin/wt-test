@@ -216,10 +216,11 @@ assert_contains "two-arg form errors" "Usage:" "$out"
 # ── wt finish — safety checks ────────────────────────────────────────────────
 section "wt finish — dirty check"
 cd "$WT_PATH"
-echo "dirty" > dirty-file.txt
+# Modify a tracked file so git status --porcelain shows modified (not just untracked)
+echo "dirty" >> README.md
 out=$(wt finish 2>&1 || true)
 assert_contains "blocks on uncommitted changes" "Uncommitted changes" "$out"
-rm dirty-file.txt
+git -C "$WT_PATH" checkout -- README.md
 
 section "wt finish — error when run from main checkout"
 cd "$REPO"
@@ -1046,6 +1047,356 @@ git -C "$RETARGET_PROJ" branch -D wt/no-meta-test 2>/dev/null || true
 # Cleanup retarget project
 git -C "$RETARGET_PROJ" worktree remove "$WT_RETARGET" --force 2>/dev/null || true
 git -C "$RETARGET_PROJ" branch -D wt/retarget-test 2>/dev/null || true
+
+# ─── C1: get_main_worktree with spaces in path ───────────────────────────────
+
+section "C1: get_main_worktree — path with spaces in directory name"
+SPACE_BASE="${TMPROOT}/my projects"
+mkdir -p "$SPACE_BASE"
+SPACE_REPO="${SPACE_BASE}/test repo"
+mkdir -p "$SPACE_REPO"
+git -C "$SPACE_REPO" init -q -b main
+git -C "$SPACE_REPO" config user.email "test@test.com"
+git -C "$SPACE_REPO" config user.name "Test"
+echo "hi" > "$SPACE_REPO/README.md"
+git -C "$SPACE_REPO" add README.md
+git -C "$SPACE_REPO" commit -q -m "initial"
+cd "$SPACE_REPO"
+stdout_space=$(WT_REGISTRY="$registry_file" bash "$WT" new "space path test" 2>/dev/null)
+WT_SPACE="${SPACE_REPO}/.worktrees/space-path-test"
+assert_eq "new: stdout is full path (with spaces)" "$WT_SPACE" "$stdout_space"
+assert_dir_exists "worktree dir created inside spaced path" "$WT_SPACE"
+# Verify .wt-meta project_root is correct (not truncated at space)
+meta_root=$(grep "^project_root=" "${WT_SPACE}/.wt-meta" | cut -d= -f2-)
+assert_eq "project_root not truncated at space" "$SPACE_REPO" "$meta_root"
+# Now finish from within the worktree — uses get_main_worktree() internally
+echo "work" > "${WT_SPACE}/work.txt"
+git -C "$WT_SPACE" add work.txt
+git -C "$WT_SPACE" commit -q -m "spaced path work"
+cd "$WT_SPACE"
+out_space=$(WT_REGISTRY="$registry_file" bash "$WT" finish --yes 2>&1) || true
+assert_contains "finish succeeds in spaced path repo" "Done!" "$out_space"
+assert_dir_not_exists "worktree removed" "$WT_SPACE"
+
+# ─── C2: sed delimiter bug with / in branch names ────────────────────────────
+
+section "C2: wt retarget — branch name with slash (e.g. release/v2)"
+SLASH_PROJ="${TMPROOT}/slash-proj"
+mkdir -p "$SLASH_PROJ"
+git -C "$SLASH_PROJ" init -q -b main
+git -C "$SLASH_PROJ" config user.email "test@test.com"
+git -C "$SLASH_PROJ" config user.name "Test"
+echo "init" > "$SLASH_PROJ/README.md"
+git -C "$SLASH_PROJ" add README.md
+git -C "$SLASH_PROJ" commit -q -m "initial"
+git -C "$SLASH_PROJ" checkout -q -b release/v2
+echo "release" > "$SLASH_PROJ/release.txt"
+git -C "$SLASH_PROJ" add release.txt
+git -C "$SLASH_PROJ" commit -q -m "release v2"
+git -C "$SLASH_PROJ" checkout -q main
+cd "$SLASH_PROJ"
+WT_SLASH="${SLASH_PROJ}/.worktrees/slash-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "slash test" 2>/dev/null
+cd "$WT_SLASH"
+out_slash=$(WT_REGISTRY="$registry_file" bash "$WT" retarget "release/v2" 2>&1) || true
+meta_base_slash=$(grep "^base_branch=" "${WT_SLASH}/.wt-meta" | cut -d= -f2-)
+assert_eq "retarget to release/v2 updates meta correctly" "release/v2" "$meta_base_slash"
+assert_contains "success message shown" "release/v2" "$out_slash"
+# Verify no corruption — meta file should parse cleanly
+meta_lines=$(wc -l < "${WT_SLASH}/.wt-meta")
+assert_contains "meta file not corrupted (has 7 lines)" "7" "$meta_lines"
+git -C "$SLASH_PROJ" worktree remove "$WT_SLASH" --force 2>/dev/null || true
+git -C "$SLASH_PROJ" branch -D "wt/slash-test" 2>/dev/null || true
+
+# ─── C3: finish warns before destroying untracked files ──────────────────────
+
+section "C3: wt finish — warns when untracked files present (confirms before --force)"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_UNTRACKED="${REPO}/.worktrees/untracked-finish-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "untracked finish test" 2>/dev/null
+echo "committed" > "${WT_UNTRACKED}/committed.txt"
+git -C "$WT_UNTRACKED" add committed.txt
+git -C "$WT_UNTRACKED" commit -q -m "committed work"
+# Add an untracked file that would be silently destroyed by --force
+echo "precious untracked data" > "${WT_UNTRACKED}/untracked.txt"
+cd "$WT_UNTRACKED"
+# Say "n" to the untracked-file warning — should abort
+out_c3=$(printf "n\n" | WT_REGISTRY="$registry_file" bash "$WT" finish 2>&1) || true
+assert_contains "warns about untracked files" "Untracked files" "$out_c3"
+assert_dir_exists "worktree preserved when user declines" "$WT_UNTRACKED"
+assert_file_exists "untracked file preserved" "${WT_UNTRACKED}/untracked.txt"
+# Now say "y" to untracked warning and "y" to proceed — should finish
+git -C "$REPO" checkout -q main
+out_c3y=$(printf "y\ny\n" | WT_REGISTRY="$registry_file" bash "$WT" finish 2>&1) || true
+assert_contains "finish proceeds when user accepts" "Done!" "$out_c3y"
+assert_dir_not_exists "worktree removed after accept" "$WT_UNTRACKED"
+
+section "C3: wt finish --yes — untracked files are destroyed without prompt (auto-accept)"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_UNTRACKED2="${REPO}/.worktrees/untracked-yes-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "untracked yes test" 2>/dev/null
+echo "committed2" > "${WT_UNTRACKED2}/committed2.txt"
+git -C "$WT_UNTRACKED2" add committed2.txt
+git -C "$WT_UNTRACKED2" commit -q -m "committed work 2"
+echo "untracked data" > "${WT_UNTRACKED2}/untracked2.txt"
+cd "$WT_UNTRACKED2"
+git -C "$REPO" checkout -q main
+out_c3y2=$(WT_REGISTRY="$registry_file" bash "$WT" finish --yes 2>&1) || true
+assert_contains "finish --yes succeeds with untracked files" "Done!" "$out_c3y2"
+assert_dir_not_exists "worktree removed with --yes" "$WT_UNTRACKED2"
+
+# ─── S2: wt finish --force skips PR-open block ───────────────────────────────
+
+section "S2: wt finish --force — skips PR-open check and finishes locally"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_FORCE="${REPO}/.worktrees/finish-force-test"
+stdout_force=$(WT_REGISTRY="$registry_file" bash "$WT" new "finish force test" 2>/dev/null)
+assert_eq "created finish-force worktree" "$WT_FORCE" "$stdout_force"
+echo "force-work" > "${WT_FORCE}/force-work.txt"
+git -C "$WT_FORCE" add force-work.txt
+git -C "$WT_FORCE" commit -q -m "force finish test commit"
+# Mock gh to return OPEN
+MOCK_BIN_FORCE="${TMPROOT}/mock-bin-force"
+mkdir -p "$MOCK_BIN_FORCE"
+cat > "${MOCK_BIN_FORCE}/gh" << 'MOCKEOF_FORCE'
+#!/usr/bin/env bash
+if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  echo "OPEN"
+fi
+MOCKEOF_FORCE
+chmod +x "${MOCK_BIN_FORCE}/gh"
+git -C "$REPO" checkout -q main
+cd "$WT_FORCE"
+_tmp_force=$(mktemp)
+stdout_fin_force=$(PATH="${MOCK_BIN_FORCE}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" finish --force --yes 2>"$_tmp_force") || true
+out_fin_force=$(cat "$_tmp_force"); rm -f "$_tmp_force"
+assert_contains "finish --force bypasses PR-open block" "Done!" "$out_fin_force"
+assert_eq "stdout is main path" "$REPO" "$stdout_fin_force"
+assert_dir_not_exists "worktree removed" "$WT_FORCE"
+branch_force=$(git -C "$REPO" rev-parse --verify "wt/finish-force-test" 2>/dev/null || echo "gone")
+assert_eq "branch deleted" "gone" "$branch_force"
+rm -rf "$MOCK_BIN_FORCE"
+
+# ─── S3: fast-forward when third worktree holds base_branch ──────────────────
+
+section "S3: wt finish — succeeds when third worktree has base checked out"
+# Setup:
+#   Main WT      → main
+#   WT_S3A       → dev (the base branch) checked out there
+#   WT_S3B       → wt/s3-finisher (1 commit ahead of dev), base_branch=dev
+# Without the fix, git fetch . HEAD:dev fails (dev locked by WT_S3A) and
+# fallback also fails (main WT is on main, not dev) → manual instructions shown.
+cd "$REPO"
+git -C "$REPO" checkout -q main   # main WT now on main; dev is free
+WT_S3A="${REPO}/.worktrees/s3-holder"
+WT_S3B="${REPO}/.worktrees/s3-finisher"
+# Create s3-holder as a bare worktree, then check out dev in it (dev is free now)
+git -C "$REPO" worktree add "$WT_S3A" -b wt/s3-holder >/dev/null 2>&1
+git -C "$WT_S3A" checkout -q dev   # dev is now locked by WT_S3A
+# Create s3-finisher from dev HEAD
+git -C "$REPO" worktree add "$WT_S3B" -b wt/s3-finisher dev >/dev/null 2>&1
+# Write .wt-meta manually (can't use wt new since main WT is on main)
+cat > "${WT_S3B}/.wt-meta" <<S3META
+base_branch=dev
+branch=wt/s3-finisher
+slug=s3-finisher
+description=s3 finisher
+project=test-project
+project_root=${REPO}
+created=$(date '+%Y-%m-%dT%H:%M:%S')
+S3META
+# Register project in registry (may already be there)
+grep -qxF "$REPO" "$registry_file" 2>/dev/null || echo "$REPO" >> "$registry_file"
+# Add one commit to s3-finisher
+echo "s3-work" > "${WT_S3B}/s3-work.txt"
+git -C "$WT_S3B" add s3-work.txt
+git -C "$WT_S3B" commit -q -m "s3 finisher work"
+# Now: main=main, s3-holder=dev (locked!), s3-finisher=wt/s3-finisher ahead of dev
+cd "$WT_S3B"
+_tmp_s3=$(mktemp)
+stdout_s3=$(WT_REGISTRY="$registry_file" bash "$WT" finish --yes 2>"$_tmp_s3") || true
+out_s3=$(cat "$_tmp_s3"); rm -f "$_tmp_s3"
+assert_contains "finish succeeds despite third worktree holding base" "Done!" "$out_s3"
+assert_dir_not_exists "finisher worktree removed" "$WT_S3B"
+branch_s3=$(git -C "$REPO" rev-parse --verify "wt/s3-finisher" 2>/dev/null || echo "gone")
+assert_eq "finisher branch deleted" "gone" "$branch_s3"
+# Verify the commit landed on dev
+dev_log_s3=$(git -C "$WT_S3A" log --oneline -5 2>/dev/null || true)
+assert_contains "s3 commit landed on dev" "s3 finisher work" "$dev_log_s3"
+# Cleanup holder
+cd "$REPO"
+git -C "$REPO" worktree remove "$WT_S3A" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/s3-holder" 2>/dev/null || true
+
+# ─── M1: slugify strips leading hyphens ──────────────────────────────────────
+
+section "M1: slugify — leading hyphens stripped from slug"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+# Description starting with hyphens should produce a slug without leading hyphens
+# Two leading spaces → after slugify → "-verbose-mode" (pre-fix) or "verbose-mode" (post-fix)
+stdout_slug=$(WT_REGISTRY="$registry_file" bash "$WT" new "  verbose mode" 2>/dev/null) || true
+WT_SLUG="${REPO}/.worktrees/verbose-mode"
+assert_eq "stdout is correct path (no leading hyphens)" "$WT_SLUG" "$stdout_slug"
+assert_dir_exists "worktree created at correct path" "$WT_SLUG"
+slug_val=$(grep "^slug=" "${WT_SLUG}/.wt-meta" 2>/dev/null | cut -d= -f2- || true)
+assert_eq "slug has no leading hyphens" "verbose-mode" "$slug_val"
+branch_val=$(grep "^branch=" "${WT_SLUG}/.wt-meta" 2>/dev/null | cut -d= -f2- || true)
+assert_eq "branch has no leading hyphens" "wt/verbose-mode" "$branch_val"
+git -C "$REPO" worktree remove "$WT_SLUG" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/verbose-mode" 2>/dev/null || true
+
+# ─── M2: doctor uses fixed-string grep for worktree paths ────────────────────
+
+section "M2: wt doctor — handles paths with BRE regex metacharacters (brackets in path)"
+REGEX_BASE="${TMPROOT}/my[proj]"   # brackets are BRE metachar — break grep character class
+REGEX_REG="${TMPROOT}/regex-registry"  # isolated registry for this test
+mkdir -p "$REGEX_BASE"
+git -C "$REGEX_BASE" init -q -b main
+git -C "$REGEX_BASE" config user.email "test@test.com"
+git -C "$REGEX_BASE" config user.name "Test"
+echo "init" > "$REGEX_BASE/README.md"
+git -C "$REGEX_BASE" add README.md
+git -C "$REGEX_BASE" commit -q -m "initial"
+cd "$REGEX_BASE"
+WT_REGEX="${REGEX_BASE}/.worktrees/regex-test"
+WT_REGISTRY="$REGEX_REG" bash "$WT" new "regex test" 2>/dev/null
+cd "$WT_REGEX"
+echo "work" > work.txt
+git -C "$WT_REGEX" add work.txt
+git -C "$WT_REGEX" commit -q -m "work"
+cd "$REGEX_BASE"
+_tmp_m2=$(mktemp)
+# Use isolated registry containing ONLY regex+proj so "all good" can only come from it
+WT_REGISTRY="$REGEX_REG" bash "$WT" doctor > "$_tmp_m2" 2>&1 < /dev/null || true
+out_m2=$(cat "$_tmp_m2"); rm -f "$_tmp_m2"
+# doctor should report "all good" — brackets must not cause false negative (orphan false alarm)
+assert_contains "doctor passes for path with brackets" "all good" "$out_m2"
+# Cleanup
+git -C "$REGEX_BASE" worktree remove "$WT_REGEX" --force 2>/dev/null || true
+git -C "$REGEX_BASE" branch -D "wt/regex-test" 2>/dev/null || true
+
+# ─── M4: retarget picker excludes current worktree branch ────────────────────
+
+section "M4: wt retarget — interactive picker excludes current worktree branch (wt/slug)"
+RT_PROJ="${TMPROOT}/rt-excl-proj"
+mkdir -p "$RT_PROJ"
+git -C "$RT_PROJ" init -q -b main
+git -C "$RT_PROJ" config user.email "test@test.com"
+git -C "$RT_PROJ" config user.name "Test"
+echo "init" > "$RT_PROJ/README.md"
+git -C "$RT_PROJ" add README.md
+git -C "$RT_PROJ" commit -q -m "initial"
+git -C "$RT_PROJ" checkout -q -b dev
+echo "dev" > "$RT_PROJ/dev.txt"
+git -C "$RT_PROJ" add dev.txt
+git -C "$RT_PROJ" commit -q -m "dev commit"
+git -C "$RT_PROJ" checkout -q main
+cd "$RT_PROJ"
+# Branch will be wt/excl-test; local branches: main, dev, wt/excl-test
+RT_WT="${RT_PROJ}/.worktrees/excl-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "excl test" 2>/dev/null
+cd "$RT_WT"
+# Feed invalid choice — causes picker to print list then abort
+out_rt_excl=$(printf "99\n" | WT_REGISTRY="$registry_file" bash "$WT" retarget 2>&1) || true
+# wt/excl-test is the current branch — must NOT appear in the picker list
+assert_not_contains "picker excludes current wt/slug branch" "wt/excl-test" "$out_rt_excl"
+# dev and main must appear (the valid targets)
+assert_contains     "picker shows other local branches"     "dev"          "$out_rt_excl"
+cd "$RT_PROJ"
+git -C "$RT_PROJ" worktree remove "$RT_WT" --force 2>/dev/null || true
+git -C "$RT_PROJ" branch -D "wt/excl-test" 2>/dev/null || true
+
+# ─── M4: cmd_pr picker — no remote branches shows single warning ──────────────
+
+section "M4: wt pr — no remote branches shows exactly one warning (not double)"
+M4_PROJ="${TMPROOT}/m4-proj"
+mkdir -p "$M4_PROJ"
+git -C "$M4_PROJ" init -q -b main
+git -C "$M4_PROJ" config user.email "test@test.com"
+git -C "$M4_PROJ" config user.name "Test"
+echo "init" > "$M4_PROJ/README.md"
+git -C "$M4_PROJ" add README.md
+git -C "$M4_PROJ" commit -q -m "initial"
+# Empty bare remote — has no branches so the remote branch list will be empty
+M4_BARE="${TMPROOT}/m4-bare.git"
+git init --bare -q "$M4_BARE"
+cd "$M4_PROJ"
+M4_WT="${M4_PROJ}/.worktrees/m4-picker-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "m4 picker test" 2>/dev/null
+echo "work" > "${M4_WT}/work.txt"
+git -C "$M4_WT" add work.txt
+git -C "$M4_WT" commit -q -m "m4 work"
+git -C "$M4_WT" remote add origin "file://${M4_BARE}"
+M4_MOCK="${TMPROOT}/m4-mock-bin"
+mkdir -p "$M4_MOCK"
+# gh: no existing PR on view, return a URL on create
+cat > "${M4_MOCK}/gh" << 'M4_MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "pr" && "$2" == "view" ]]; then exit 1; fi
+if [[ "$1" == "pr" && "$2" == "create" ]]; then echo "https://github.com/test/pr/1"; fi
+M4_MOCKEOF
+chmod +x "${M4_MOCK}/gh"
+cd "$M4_WT"
+# Answer 'y' to "change base?" — picker finds no remote branches, should warn once
+out_m4=$(printf 'y\n' | PATH="${M4_MOCK}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" pr 2>&1 || true)
+assert_contains     "shows no-remote-branches warning" "No remote branches found" "$out_m4"
+assert_not_contains "does not also show invalid-choice" "Invalid choice"          "$out_m4"
+cd "$M4_PROJ"
+git -C "$M4_PROJ" worktree remove "$M4_WT" --force 2>/dev/null || true
+git -C "$M4_PROJ" branch -D "wt/m4-picker-test" 2>/dev/null || true
+rm -rf "$M4_MOCK" "$M4_BARE"
+
+# ─── S1: wt new from worktree shows base branch from main checkout ────────────
+
+section "S1: wt new from worktree — info message shows base branch (main checkout HEAD)"
+cd "$REPO"
+git -C "$REPO" checkout -q main
+S1_WT="${REPO}/.worktrees/s1-parent"
+WT_REGISTRY="$registry_file" bash "$WT" new "s1 parent" 2>/dev/null
+# From inside a worktree, create another — main checkout is on 'main'
+cd "$S1_WT"
+out_s1=$(WT_REGISTRY="$registry_file" bash "$WT" new "s1 child" 2>&1) || true
+# Must mention the base branch (main) in the worktree-context info message
+assert_contains "info message includes base branch name" "(main)" "$out_s1"
+# Cleanup
+S1_CHILD="${REPO}/.worktrees/s1-child"
+git -C "$REPO" worktree remove "$S1_CHILD" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/s1-child" 2>/dev/null || true
+git -C "$REPO" worktree remove "$S1_WT" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/s1-parent" 2>/dev/null || true
+
+# ─── S4: wt retarget interactive picker exits cleanly on EOF ──────────────────
+
+section "S4: wt retarget — interactive picker exits cleanly on EOF (stdin closed)"
+S4_PROJ="${TMPROOT}/s4-proj"
+mkdir -p "$S4_PROJ"
+git -C "$S4_PROJ" init -q -b main
+git -C "$S4_PROJ" config user.email "test@test.com"
+git -C "$S4_PROJ" config user.name "Test"
+echo "init" > "$S4_PROJ/README.md"
+git -C "$S4_PROJ" add README.md
+git -C "$S4_PROJ" commit -q -m "initial"
+git -C "$S4_PROJ" checkout -q -b dev
+echo "dev" > "$S4_PROJ/dev.txt"
+git -C "$S4_PROJ" add dev.txt
+git -C "$S4_PROJ" commit -q -m "dev commit"
+git -C "$S4_PROJ" checkout -q main
+cd "$S4_PROJ"
+S4_WT="${S4_PROJ}/.worktrees/s4-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "s4 test" 2>/dev/null
+cd "$S4_WT"
+# Run retarget with no args (interactive picker) and stdin closed — must not crash
+s4_exit=0
+out_s4=$(WT_REGISTRY="$registry_file" bash "$WT" retarget 2>&1 < /dev/null) || s4_exit=$?
+assert_eq "retarget interactive picker exits 0 on EOF" "0" "$s4_exit"
+assert_contains "retarget shows Aborted on EOF" "Aborted" "$out_s4"
+cd "$S4_PROJ"
+git -C "$S4_PROJ" worktree remove "$S4_WT" --force 2>/dev/null || true
+git -C "$S4_PROJ" branch -D "wt/s4-test" 2>/dev/null || true
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 

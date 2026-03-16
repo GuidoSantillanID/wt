@@ -156,7 +156,9 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 ```
 1. Parse args: 0 args → error; 1 arg → description (use git rev-parse --show-toplevel); 2+ args → error
 2. Resolve project root: git rev-parse --show-toplevel
-3. Resolve main worktree: if inside a worktree (.git is a file), call get_main_worktree() to get the actual root
+3. Resolve main worktree: if inside a worktree (.git is a file), call get_main_worktree() to get the
+   actual root; print info "Detected worktree context — branching from main checkout (<branch>): <path>"
+   NOTE: the new worktree's base is always the main checkout's HEAD, not the current worktree's branch
 4. _register_project(project_root)
 5. Slugify description → branch = "wt/<slug>", worktree_path = "<project_root>/.worktrees/<slug>"
 6. Conflict checks: worktree dir exists? → error; branch exists? → error
@@ -215,10 +217,9 @@ Key difference from `wt finish`: rebases onto `origin/<base_branch>` (not local)
    - git rev-parse --verify "$arg" OR git rev-parse --verify "origin/$arg"
    - Neither found → error "Branch not found: X"
 5. If no arg:
-   - List remote branches (git branch -r --list 'origin/*', strip prefix/HEAD)
-   - If no remote branches: fall back to local branches
-   - If no branches at all → error
-   - Interactive numbered picker; invalid choice → warn + exit 0
+   - Print "Current base: <base_branch>"
+   - Call _pick_base_branch(<branch_without_prefix>, base_branch) — falls back to local branches
+   - No branches found → error; invalid choice / EOF → warn "Invalid choice. Aborted." + exit 0
 6. If new_base == base_branch → info "Already targeting X"; return 0
 7. sed -i.bak "s/^base_branch=.*/base_branch=${new_base}/" meta_file
 8. success "Base branch changed: old → new"
@@ -343,10 +344,10 @@ Output format: `Xm ago`, `Xh ago`, `Xd ago`, `Xw ago` (< 1h, < 1d, < 7d, ≥ 7d)
 ### `get_main_worktree()`
 
 ```bash
-git worktree list --porcelain | awk '/^worktree / { if (first=="") first=$2 } END { print first }'
+git worktree list --porcelain | awk '/^worktree /{ if (!f) { sub(/^worktree /, ""); f=$0 } } END { print f }'
 ```
 
-The first entry in `git worktree list --porcelain` is always the main worktree. Works even when called from inside a linked worktree.
+The first entry in `git worktree list --porcelain` is always the main worktree. Works even when called from inside a linked worktree. Uses `sub()` + `$0` to handle paths with spaces (the old `$2` split on whitespace).
 
 ### `_load_registry()` / `_register_project()` / `_unregister_project()`
 
@@ -371,7 +372,7 @@ The registry is a plain text file (`~/.config/wt/projects`, one path per line). 
 | # | Edge case | Handling |
 |---|---|---|
 | 1 | `wt new` from inside a worktree | Detect `.git` file vs dir; redirect to main checkout via `get_main_worktree()`; register main checkout path |
-| 2 | Base branch checked out in main worktree during ff | Can't `git fetch . HEAD:<base>` (ref locked); fall back to `git -C $main_wt merge --ff-only` |
+| 2 | Base branch checked out in any worktree during ff | Can't `git fetch . HEAD:<base>` (ref locked); scan all worktrees via `git worktree list --porcelain` to find whichever has base checked out; run `merge --ff-only` there |
 | 3 | `wt finish`/`drop` from same tmux session being killed | Switch to project main session first; if no other session exists, warn and skip kill |
 | 4 | `wt new` with apostrophes in description | Slugify strips them; `.wt-meta` preserves them verbatim (no shell quoting) |
 | 5 | `wt list` with dirty worktrees | Color the dirty count yellow; `.wt-meta` excluded via `info/exclude` so it doesn't count |
@@ -445,6 +446,8 @@ The hardest part of the implementation. Options evaluated:
 Chosen for v1: try (1) first. On ff failure, check if main worktree has target checked out and use (2). On conflict, abort and print manual instructions.
 
 Changed in v7: replaced with rebase + fast-forward strategy. Old: ff-first, `--no-ff` fallback. New: `git rebase <base>` → `git fetch . HEAD:<base>` (ff). Always linear history, handles base drift cleanly.
+
+Current strategy: try (1) first. On failure, scan ALL worktrees (not just main) using `git worktree list --porcelain` to find whichever one has base checked out; run `merge --ff-only` there. This handles the three-worktree scenario where base is checked out in a non-main worktree.
 
 ```
 Old: ff → --no-ff fallback → conflict abort
@@ -564,6 +567,34 @@ Replaced `PROJECT_SEARCH_PATHS` / `WT_SEARCH_PATHS` / `~/.config/wt/config` with
 38. **`wt pr` dirty check moved earlier** — Dirty check now fires before the interactive base-branch prompt, consistent with `wt finish`/`wt drop`.
 39. **Tests switched to `WT_REGISTRY`** — All test invocations now use `WT_REGISTRY="$registry_file"` pointing at a temp file. Tests expanded from 95 → 156.
 40. **Bash 3.2 empty-array fix** — `"${arr[@]}"` with `set -u` throws "unbound variable" on bash <4.4 (macOS system bash 3.2) when the array is empty. Fixed with `"${arr[@]+"${arr[@]}"}"` guard in `cmd_list` and `cmd_doctor`. Tests: 156 → 158.
+
+### v11: Robustness audit fixes (2026-03-16)
+
+Systematic audit of the codebase at commit `38a5e84`. All fixes TDD: failing test first, then fix.
+
+41. **`get_main_worktree()` broken on paths with spaces** (C1) — `awk`'s `$2` splits on whitespace, truncating paths containing spaces. Fixed by using `sub(/^worktree /, "")` + `$0` instead of `$2`. Affects all commands that call `get_main_worktree()` (`finish`, `drop`, `new` from worktree, `_cleanup_worktree`).
+
+42. **`sed` delimiter bug in `retarget` and `pr`** (C2) — `sed "s/^base_branch=.*/base_branch=${new_base}/"` used `/` as delimiter. Branch names like `release/v2` corrupted `.wt-meta` silently (sed command broke mid-pattern). Fixed by switching to `|` delimiter: `sed "s|^base_branch=.*|base_branch=${new_base}|"`.
+
+43. **`_cleanup_worktree --force` silently destroyed untracked files** (C3) — `git status --porcelain` in `cmd_finish` treated untracked files the same as tracked changes (generic "Uncommitted changes" error). Split the check: tracked changes → hard error; untracked files → warn "will be permanently deleted" + confirm (auto-accepted by `--yes`). The `--force` flag on `worktree remove` is still used since the user has now consented.
+
+44. **`wt finish --force` flag added** (S2) — PR-open check had no override. Users wanting to abandon a PR and finish locally had to close the PR on GitHub first. Added `--force` flag to `cmd_finish` that skips the open-PR guard and proceeds to local rebase+ff flow.
+
+45. **Fast-forward failed with third worktree on base** (S3) — Strategy 2 FF fallback only checked the main worktree for the base branch. If a non-main worktree had base checked out, both strategies failed. Fixed by scanning ALL worktrees via `git worktree list --porcelain` and running `merge --ff-only` from whichever one has base checked out.
+
+46. **`slugify` didn't strip leading hyphens** (M1) — Descriptions starting with non-alphanumeric characters (e.g. leading spaces) produced slugs with leading hyphens (`-verbose-mode`). Added `| sed 's/^-*//'` as final step in slugify pipeline.
+
+47. **`cmd_doctor` check 2 used regex grep for path matching** (M2) — `grep -q "^worktree ${wt_dir%/}$"` treated the worktree path as a BRE pattern. Paths with bracket characters (`[`, `]`) created character classes that didn't match the literal path, causing false "Orphaned worktree dir" reports. Fixed by switching to `grep -qF` (fixed-string matching).
+
+### v12: Remaining audit items (2026-03-16)
+
+Continuation of the v11 robustness audit. All fixes TDD: failing test first, then fix.
+
+48. **`wt new` from worktree didn't show base branch** (S1) — The "Detected worktree context" info message only showed the main checkout path, not which branch it was on. Users running `wt new` from inside a `dev`-based worktree couldn't easily see that the new worktree would target `main` (main checkout's HEAD), not `dev`. Fixed: info message now reads "Detected worktree context — branching from main checkout (<branch>): <path>".
+
+49. **`wt retarget` interactive picker crashed on EOF** (S4) — `read -r choice` in the interactive picker returned non-zero on EOF (stdin closed). With `set -e`, this caused the script to exit with code 1 instead of showing "Aborted." and exiting cleanly. Affects non-interactive contexts (scripts, CI, stdin redirected to /dev/null). Fixed by appending `|| true` to the `read` call.
+
+50. **Picker logic duplicated between `retarget` and `pr`** (M4) — `cmd_retarget` and `cmd_pr` each contained an independent copy of the remote-branch picker (list, number, read, validate). Extracted into `_pick_base_branch <exclude_branch> <current_base> [--no-fallback]` helper. Prints selection to stdout; returns 1 when no branches exist. Both commands now call the helper. Also fixed the same EOF `read` bug in `cmd_pr`'s picker as part of this refactor.
 
 ---
 

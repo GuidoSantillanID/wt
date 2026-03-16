@@ -8,7 +8,7 @@
 #
 # COMMANDS
 #   wt new [--with-deps] "<description>"   Create a worktree with auto-named branch
-#   wt finish [--yes|-y]                   Rebase + fast-forward into base, clean up
+#   wt finish [--yes|-y] [--force]         Rebase + fast-forward into base, clean up
 #   wt sync                                Rebase onto latest base branch (from origin)
 #   wt retarget [branch]                   Change this worktree's base branch
 #   wt drop [--yes|-y]                     Abandon worktree without merging, clean up
@@ -144,13 +144,14 @@ slugify() {
     | sed 's/[^a-z0-9 -]//g' \
     | tr -s ' ' '-' \
     | cut -c1-50 \
-    | sed 's/-$//'
+    | sed 's/-$//' \
+    | sed 's/^-*//'
 }
 
 # Get the main worktree path (the first entry in `git worktree list`)
 get_main_worktree() {
   git worktree list --porcelain 2>/dev/null \
-    | awk '/^worktree / { if (first=="") first=$2 } END { print first }'
+    | awk '/^worktree /{ if (!f) { sub(/^worktree /, ""); f=$0 } } END { print f }'
 }
 
 # Safely read a single key from a .wt-meta file
@@ -198,7 +199,7 @@ wt — Git Worktree Lifecycle Tool
 
 USAGE
   wt new [--with-deps] "<description>"   Create a worktree with auto-named branch
-  wt finish [--yes|-y]                   Rebase onto base, fast-forward, clean up
+  wt finish [--yes|-y] [--force]         Rebase onto base, fast-forward, clean up
   wt sync                                Rebase onto latest base branch (from origin)
   wt retarget [branch]                   Change this worktree's base branch
   wt drop [--yes|-y]                     Abandon worktree without merging, clean up
@@ -243,6 +244,7 @@ NOTES
   • After `wt new`, your shell cd's into the new worktree
   • After `wt finish`, your shell cd's back to the main worktree
   • Pass --yes / -y to wt finish, wt drop, or wt pr to skip confirmation prompts
+  • Pass --force to wt finish to proceed even when a PR is still open on GitHub
   • Use `wt sync` to keep long-lived worktrees current with the base branch
   • `wt pr` requires the GitHub CLI (gh) — https://cli.github.com
   • `wt pr` rebases before pushing (same as wt sync); worktree stays alive after
@@ -296,7 +298,9 @@ cmd_new() {
   if [[ -f "${project_root}/.git" ]]; then
     project_root=$(get_main_worktree) \
       || error "Could not resolve main worktree path"
-    info "Detected worktree context — using main checkout: ${project_root}"
+    local main_branch
+    main_branch=$(git -C "$project_root" symbolic-ref --short HEAD 2>/dev/null || echo "unknown")
+    info "Detected worktree context — branching from main checkout (${main_branch}): ${project_root}"
   fi
 
   _register_project "$project_root"
@@ -436,45 +440,11 @@ cmd_retarget() {
     fi
   else
     # Interactive picker: list remote branches, fall back to local
-    local branches=()
-    while IFS= read -r b; do
-      branches+=("$b")
-    done < <(
-      git branch -r --list 'origin/*' 2>/dev/null \
-        | sed -e 's/^[[:space:]]*//' -e '/HEAD/d' -e 's|^origin/||' \
-        | grep -v "^${branch#*/}$" \
-        | sort
-    )
-
-    if (( ${#branches[@]} == 0 )); then
-      while IFS= read -r b; do
-        branches+=("$b")
-      done < <(
-        git branch 2>/dev/null \
-          | sed -e 's/^[[:space:]]*//' -e 's/^\* //' \
-          | grep -v "^${branch}$" \
-          | sort
-      )
-    fi
-
-    if (( ${#branches[@]} == 0 )); then
-      error "No other branches found to retarget onto."
-    fi
-
     echo -e "  Current base: ${BOLD}${base_branch}${RESET}" >&2
-    echo -e "  Pick a new base branch:" >&2
-    local i
-    for i in "${!branches[@]}"; do
-      local marker=""
-      [[ "${branches[$i]}" == "$base_branch" ]] && marker=" (current)"
-      echo -e "    $((i+1))) ${branches[$i]}${marker}" >&2
-    done
-    local choice
-    echo -en "  ${BOLD}Enter number [1-${#branches[@]}]:${RESET} " >&2
-    read -r choice
-    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#branches[@]} )); then
-      new_base="${branches[$((choice-1))]}"
-    else
+    new_base=$(_pick_base_branch "${branch}" "$base_branch") || {
+      error "No other branches found to retarget onto."
+    }
+    if [[ -z "$new_base" ]]; then
       warn "Invalid choice. Aborted."
       exit 0
     fi
@@ -485,7 +455,7 @@ cmd_retarget() {
     return 0
   fi
 
-  sed -i.bak "s/^base_branch=.*/base_branch=${new_base}/" "$meta_file" \
+  sed -i.bak "s|^base_branch=.*|base_branch=${new_base}|" "$meta_file" \
     && rm -f "${meta_file}.bak"
 
   success "Base branch changed: ${BOLD}${base_branch}${RESET} → ${BOLD}${new_base}${RESET}"
@@ -509,11 +479,63 @@ _rebase_onto_base() {
   git rebase "${rebase_target}" >&2
 }
 
+# Interactive branch picker. Lists remote branches, optionally falls back to local.
+# Args: <exclude_branch> <current_base> [--no-fallback]
+# Prints selected branch name to stdout (empty if invalid choice / EOF).
+# Returns 1 if no branches found at all, 0 otherwise.
+_pick_base_branch() {
+  local exclude_branch="$1" current_base="$2"
+  local fallback=1
+  [[ "${3:-}" == "--no-fallback" ]] && fallback=0
+
+  local branches=()
+  while IFS= read -r b; do
+    branches+=("$b")
+  done < <(
+    git branch -r --list 'origin/*' 2>/dev/null \
+      | sed -e 's/^[[:space:]]*//' -e '/HEAD/d' -e 's|^origin/||' \
+      | grep -v "^${exclude_branch}$" \
+      | sort
+  )
+
+  if (( ${#branches[@]} == 0 )) && (( fallback == 1 )); then
+    while IFS= read -r b; do
+      branches+=("$b")
+    done < <(
+      git branch 2>/dev/null \
+        | sed -e 's/^[[:space:]]*//' -e 's/^\* //' \
+        | grep -v "^${exclude_branch}$" \
+        | sort
+    )
+  fi
+
+  if (( ${#branches[@]} == 0 )); then
+    return 1
+  fi
+
+  echo -e "  Pick a new base branch:" >&2
+  local i
+  for i in "${!branches[@]}"; do
+    local marker=""
+    [[ -n "$current_base" && "${branches[$i]}" == "$current_base" ]] && marker=" (current)"
+    echo -e "    $((i+1))) ${branches[$i]}${marker}" >&2
+  done
+  local choice
+  echo -en "  ${BOLD}Enter number [1-${#branches[@]}]:${RESET} " >&2
+  read -r choice || true
+  if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#branches[@]} )); then
+    echo "${branches[$((choice-1))]}"
+  fi
+}
+
 # wt finish — rebase worktree onto base, fast-forward, clean up
 cmd_finish() {
-  local auto_yes=0
+  local auto_yes=0 force=0
   for arg in "$@"; do
-    case "$arg" in --yes|-y) auto_yes=1 ;; esac
+    case "$arg" in
+      --yes|-y) auto_yes=1 ;;
+      --force)  force=1 ;;
+    esac
   done
 
   local repo_root
@@ -542,9 +564,18 @@ cmd_finish() {
   info "Description: ${description}"
   info "Base branch: ${BOLD}${base_branch}${RESET}"
 
-  # Safety: uncommitted changes
-  [[ -n "$(git status --porcelain)" ]] \
-    && error "Uncommitted changes present. Commit or stash before 'wt finish'."
+  # Safety: tracked uncommitted changes (must commit/stash before rebase)
+  if git status --porcelain | grep -qv '^??'; then
+    error "Uncommitted changes present. Commit or stash before 'wt finish'."
+  fi
+
+  # Safety: untracked files (git worktree remove --force will permanently delete them)
+  if git status --porcelain | grep -q '^??'; then
+    warn "Untracked files in this worktree will be permanently deleted."
+    if (( auto_yes == 0 )); then
+      confirm "Continue? Untracked files will be lost." || { info "Aborted."; exit 0; }
+    fi
+  fi
 
   # Safety: editor still running (tmux only; override claude_running_in_session() to customize)
   if [[ -n "${TMUX:-}" ]]; then
@@ -577,7 +608,10 @@ cmd_finish() {
       echo "$main_wt"
       return 0
     elif [[ "$pr_state" == "OPEN" ]]; then
-      error "PR is still open. Merge or close it on GitHub first, then run 'wt finish' again."
+      if (( force == 0 )); then
+        error "PR is still open. Merge or close it on GitHub first, or use --force to finish locally."
+      fi
+      warn "PR is still open — proceeding with local rebase+finish (--force)."
     fi
     # CLOSED (not merged), empty (no PR), or gh call failed → fall through to local flow
   fi
@@ -601,23 +635,35 @@ cmd_finish() {
   if ff_err=$(git fetch . "HEAD:${base_branch}" 2>&1); then
     success "Fast-forward successful"
   else
-    # Strategy 2: base_branch is checked out in the main worktree — use --ff-only there
-    local main_branch
-    main_branch=$(git -C "$main_wt" symbolic-ref --short HEAD 2>/dev/null || echo "")
-    if [[ "$main_branch" == "$base_branch" ]]; then
-      if git -C "$main_wt" merge --ff-only "$branch" >&2; then
-        success "Fast-forward successful (from main worktree)"
+    # Strategy 2: find any worktree (including main) that has base_branch checked out
+    local ff_wt=""
+    while IFS= read -r porcelain_line; do
+      if [[ "$porcelain_line" == worktree\ * ]]; then
+        local wt_cand="${porcelain_line#worktree }"
+        [[ "$wt_cand" == "$repo_root" ]] && continue  # skip current worktree
+        local wt_cand_branch
+        wt_cand_branch=$(git -C "$wt_cand" symbolic-ref --short HEAD 2>/dev/null || echo "")
+        if [[ "$wt_cand_branch" == "$base_branch" ]]; then
+          ff_wt="$wt_cand"
+          break
+        fi
+      fi
+    done < <(git worktree list --porcelain 2>/dev/null)
+
+    if [[ -n "$ff_wt" ]]; then
+      if git -C "$ff_wt" merge --ff-only "$branch" >&2; then
+        success "Fast-forward successful (from worktree: $(basename "$ff_wt"))"
       else
         warn "Fast-forward failed: ${ff_err}"
         echo -e "Resolve manually:" >&2
-        echo -e "  cd ${main_wt} && git merge --ff-only ${branch}" >&2
+        echo -e "  cd ${ff_wt} && git merge --ff-only ${branch}" >&2
         echo -e "  # then: git worktree remove ${repo_root} && git branch -D ${branch}" >&2
         exit 1
       fi
     else
-      warn "Could not fast-forward: '${base_branch}' is not checked out in main worktree."
+      warn "Could not fast-forward: '${base_branch}' is not checked out in any worktree."
       echo -e "Resolve manually:" >&2
-      echo -e "  cd ${main_wt} && git checkout ${base_branch} && git merge --ff-only ${branch}" >&2
+      echo -e "  cd <a worktree on ${base_branch}> && git merge --ff-only ${branch}" >&2
       echo -e "  git worktree remove ${repo_root} && git branch -D ${branch}" >&2
       exit 1
     fi
@@ -774,34 +820,17 @@ cmd_pr() {
 
   if (( auto_yes == 0 )); then
     if confirm "Base branch: ${BOLD}${base_branch}${RESET} — change?"; then
-      local branches=()
-      while IFS= read -r b; do
-        branches+=("$b")
-      done < <(
-        git branch -r --list 'origin/*' 2>/dev/null \
-          | sed -e 's/^[[:space:]]*//' -e '/HEAD/d' -e 's|^origin/||' \
-          | grep -v "^${branch}$" \
-          | sort
-      )
-
-      if (( ${#branches[@]} == 0 )); then
+      local picked pr_had_branches=1
+      picked=$(_pick_base_branch "${branch}" "$base_branch" --no-fallback) || {
         warn "No remote branches found. Keeping ${base_branch}."
-      else
-        echo -e "  Pick a base branch:" >&2
-        local i
-        for i in "${!branches[@]}"; do
-          echo -e "    $((i+1))) ${branches[$i]}" >&2
-        done
-        local choice
-        echo -en "  ${BOLD}Enter number [1-${#branches[@]}]:${RESET} " >&2
-        read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#branches[@]} )); then
-          base_branch="${branches[$((choice-1))]}"
-          sed -i.bak "s/^base_branch=.*/base_branch=${base_branch}/" "$meta_file" && rm -f "${meta_file}.bak"
-          success "Base branch changed to ${base_branch}"
-        else
-          warn "Invalid choice. Keeping ${base_branch}."
-        fi
+        pr_had_branches=0
+      }
+      if [[ -n "$picked" ]]; then
+        base_branch="$picked"
+        sed -i.bak "s|^base_branch=.*|base_branch=${base_branch}|" "$meta_file" && rm -f "${meta_file}.bak"
+        success "Base branch changed to ${base_branch}"
+      elif (( pr_had_branches == 1 )); then
+        warn "Invalid choice. Keeping ${base_branch}."
       fi
     fi
   fi
@@ -1073,7 +1102,7 @@ cmd_doctor() {
           local slug
           slug=$(basename "$wt_dir")
           if ! git -C "$project_root" worktree list --porcelain 2>/dev/null \
-              | grep -q "^worktree ${wt_dir%/}$"; then
+              | grep -qF "worktree ${wt_dir%/}"; then
             output+="  ${RED}✗${RESET} Orphaned worktree dir ${BOLD}.worktrees/${slug}${RESET} (not a registered git worktree)\n"
             if confirm "    Remove dir .worktrees/${slug}?"; then
               rm -rf "$wt_dir" \
