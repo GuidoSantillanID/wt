@@ -11,7 +11,7 @@
 #   wt finish [--yes|-y] [--force]         Rebase + fast-forward into base, clean up
 #   wt sync                                Rebase onto latest base branch (from origin)
 #   wt retarget [branch]                   Change this worktree's base branch
-#   wt drop [--yes|-y]                     Abandon worktree without merging, clean up
+#   wt abandon [--yes|-y]                  Abandon worktree without merging, clean up
 #   wt pr [--draft] [--yes|-y]             Push branch and open a GitHub PR (requires gh)
 #   wt status                              Show current worktree info
 #   wt list                                Show all worktrees across projects
@@ -20,12 +20,12 @@
 # INSTALLATION
 #   1. Run ./install.sh  (copies bin/wt to ~/.local/bin/wt)
 #      Or manually: cp bin/wt ~/.local/bin/wt && chmod +x ~/.local/bin/wt
-#   2. Add the shell wrapper to ~/.zshrc or ~/.bashrc so that wt new/finish/drop
+#   2. Add the shell wrapper to ~/.zshrc or ~/.bashrc so that wt new/finish/abandon
 #      cd your shell into the new directory:
 #
 #      # zsh (~/.zshrc):
 #      function wt() {
-#        if [[ "$1" == "new" || "$1" == "finish" || "$1" == "done" || "$1" == "drop" ]]; then
+#        if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" ]]; then
 #          local dir
 #          dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
 #        else
@@ -35,7 +35,7 @@
 #
 #      # bash (~/.bashrc):
 #      wt() {    # identical syntax, just a different file
-#        if [[ "$1" == "new" || "$1" == "finish" || "$1" == "done" || "$1" == "drop" ]]; then
+#        if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" ]]; then
 #          local dir
 #          dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
 #        else
@@ -52,7 +52,7 @@
 #   - Branch name: wt/<slug> (auto-generated from description)
 #   - .wt-meta stores key=value pairs (no quoting, read with cut -d= -f2-)
 #   - `wt finish` reads .wt-meta, safety-checks, rebases onto base, fast-forwards, removes worktree+branch
-#   - `wt drop` abandons the worktree without merging
+#   - `wt abandon` abandons the worktree without merging
 #
 # =============================================================================
 
@@ -202,7 +202,7 @@ USAGE
   wt finish [--yes|-y] [--force]         Rebase onto base, fast-forward, clean up
   wt sync                                Rebase onto latest base branch (from origin)
   wt retarget [branch]                   Change this worktree's base branch
-  wt drop [--yes|-y]                     Abandon worktree without merging, clean up
+  wt abandon [--yes|-y]                  Abandon worktree without merging, clean up
   wt pr [--draft] [--yes|-y]             Push branch and open a GitHub PR (requires gh)
   wt status                              Show current worktree info
   wt list                                Show all active worktrees across projects
@@ -223,7 +223,7 @@ EXAMPLES
   wt sync
 
   # Abandon a dead-end worktree without merging:
-  wt drop
+  wt abandon
 
   # Push and open a GitHub PR (from inside a worktree):
   wt pr
@@ -243,7 +243,7 @@ NOTES
   • Branch names: wt/<slug> (auto-generated from your description)
   • After `wt new`, your shell cd's into the new worktree
   • After `wt finish`, your shell cd's back to the main worktree
-  • Pass --yes / -y to wt finish, wt drop, or wt pr to skip confirmation prompts
+  • Pass --yes / -y to wt finish, wt abandon, or wt pr to skip confirmation prompts
   • Pass --force to wt finish to proceed even when a PR is still open on GitHub
   • Use `wt sync` to keep long-lived worktrees current with the base branch
   • `wt pr` requires the GitHub CLI (gh) — https://cli.github.com
@@ -728,8 +728,8 @@ cmd_sync() {
   success "Synced — ${branch} is up to date with ${base_branch}"
 }
 
-# wt drop — abandon worktree without merging
-cmd_drop() {
+# wt abandon — abandon worktree without merging
+cmd_abandon() {
   local auto_yes=0
   for arg in "$@"; do
     case "$arg" in --yes|-y) auto_yes=1 ;; esac
@@ -1233,10 +1233,10 @@ main() {
 
   case "$cmd" in
     new)            cmd_new "$@" ;;
-    finish|done)    cmd_finish "$@" ;;
+    finish)         cmd_finish "$@" ;;
     sync)           cmd_sync "$@" ;;
     retarget)       cmd_retarget "$@" ;;
-    drop)           cmd_drop "$@" ;;
+    abandon)        cmd_abandon "$@" ;;
     pr)             cmd_pr "$@" ;;
     status|st)      cmd_status "$@" ;;
     list|ls)        cmd_list "$@" ;;

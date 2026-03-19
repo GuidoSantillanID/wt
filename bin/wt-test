@@ -120,9 +120,18 @@ section "wt help"
 out=$(wt help 2>&1)
 assert_contains "USAGE"    "USAGE"    "$out"
 assert_contains "wt new"   "wt new"   "$out"
-assert_contains "wt finish" "wt finish" "$out"
-assert_contains "wt drop"  "wt drop"  "$out"
-assert_contains "wt list"  "wt list"  "$out"
+assert_contains     "wt finish"      "wt finish"  "$out"
+assert_contains     "wt abandon"     "wt abandon" "$out"
+assert_not_contains "wt drop absent" "wt drop"    "$out"
+assert_contains     "wt list"        "wt list"    "$out"
+
+section "wt done — unknown command"
+done_out=$(wt done 2>&1 || true)
+assert_contains     "wt done is unknown" "Unknown command" "$done_out"
+
+section "wt drop — unknown command"
+drop_out=$(wt drop 2>&1 || true)
+assert_contains     "wt drop is unknown" "Unknown command" "$drop_out"
 
 # ── wt list — empty registry (no wt new yet) ────────────────────────────────
 section "wt list — no crash with missing registry file"
@@ -227,29 +236,29 @@ cd "$REPO"
 out=$(wt finish 2>&1 || true)
 assert_contains "errors when not in a worktree" "main checkout" "$out"
 
-# ── wt drop — dirty worktree ─────────────────────────────────────────────────
-section "wt drop — dirty worktree double-confirm"
+# ── wt abandon — dirty worktree ──────────────────────────────────────────────
+section "wt abandon — dirty worktree double-confirm"
 cd "$REPO"
 WT_PATH_DIRTY="${REPO}/.worktrees/dirty-drop-test"
 stdout_dd=$(wt new "dirty drop test" 2>/dev/null)
-assert_eq "created dirty drop worktree" "$WT_PATH_DIRTY" "$stdout_dd"
+assert_eq "created dirty abandon worktree" "$WT_PATH_DIRTY" "$stdout_dd"
 cd "$WT_PATH_DIRTY"
 echo "uncommitted" > dirty-file.txt
-out=$(printf "y\ny\n" | wt drop 2>&1)
-assert_contains   "drop reports success"  "Dropped"  "$out"
+out=$(printf "y\ny\n" | wt abandon 2>&1)
+assert_contains   "abandon reports success"  "Dropped"  "$out"
 assert_dir_not_exists "dirty worktree removed" "$WT_PATH_DIRTY"
 branch_dd=$(git -C "$REPO" rev-parse --verify "wt/dirty-drop-test" 2>/dev/null || echo "gone")
 assert_eq         "dirty branch deleted"  "gone" "$branch_dd"
 
-# ── wt drop ──────────────────────────────────────────────────────────────────
-section "wt drop — abandons worktree without merging"
+# ── wt abandon ───────────────────────────────────────────────────────────────
+section "wt abandon — abandons worktree without merging"
 # its-a-tricky-description has no dirty files (.wt-meta excluded), so only one confirm prompt
 cd "$WT_PATH2"
 _tmp_err2=$(mktemp)
-stdout_drop=$(printf "y\n" | wt drop 2>"$_tmp_err2")
+stdout_drop=$(printf "y\n" | wt abandon 2>"$_tmp_err2")
 out=$(cat "$_tmp_err2"); rm -f "$_tmp_err2"
-assert_contains    "drop reports success"        "Dropped"  "$out"
-assert_eq          "drop stdout is main worktree path" "$REPO" "$stdout_drop"
+assert_contains    "abandon reports success"        "Dropped"  "$out"
+assert_eq          "abandon stdout is main worktree path" "$REPO" "$stdout_drop"
 assert_dir_not_exists "worktree dir removed"     "$WT_PATH2"
 branch_exists=$(git -C "$REPO" rev-parse --verify "wt/its-a-tricky-description" 2>/dev/null || echo "gone")
 assert_eq          "branch force-deleted"        "gone" "$branch_exists"
@@ -465,38 +474,38 @@ assert_eq             "branch deleted"        "gone"            "$branch_fmy"
 
 rm -rf "$MOCK_BIN_FIN"
 
-# ── wt drop --yes ─────────────────────────────────────────────────────────────
-section "wt drop --yes — clean worktree (no stdin pipe)"
+# ── wt abandon --yes ──────────────────────────────────────────────────────────
+section "wt abandon --yes — clean worktree (no stdin pipe)"
 cd "$REPO"
 git -C "$REPO" checkout -q dev
 WT_PATH_DY="${REPO}/.worktrees/drop-yes-test"
 stdout_dy=$(wt new "drop yes test" 2>/dev/null)
-assert_eq "created drop-yes worktree" "$WT_PATH_DY" "$stdout_dy"
+assert_eq "created abandon-yes worktree" "$WT_PATH_DY" "$stdout_dy"
 cd "$WT_PATH_DY"
 _tmp_dy=$(mktemp)
-stdout_drop_yes=$(wt drop --yes 2>"$_tmp_dy")
+stdout_drop_yes=$(wt abandon --yes 2>"$_tmp_dy")
 out_drop_yes=$(cat "$_tmp_dy"); rm -f "$_tmp_dy"
-assert_contains       "drop --yes reports success"    "Dropped"  "$out_drop_yes"
-assert_eq             "stdout is main worktree path"  "$REPO"    "$stdout_drop_yes"
-assert_dir_not_exists "worktree removed"              "$WT_PATH_DY"
+assert_contains       "abandon --yes reports success"  "Dropped"  "$out_drop_yes"
+assert_eq             "stdout is main worktree path"   "$REPO"    "$stdout_drop_yes"
+assert_dir_not_exists "worktree removed"               "$WT_PATH_DY"
 branch_dy=$(git -C "$REPO" rev-parse --verify "wt/drop-yes-test" 2>/dev/null || echo "gone")
-assert_eq             "branch deleted"                "gone"     "$branch_dy"
+assert_eq             "branch deleted"                 "gone"     "$branch_dy"
 
-section "wt drop --yes — dirty worktree (skips both confirms)"
+section "wt abandon --yes — dirty worktree (skips both confirms)"
 cd "$REPO"
 git -C "$REPO" checkout -q dev
 WT_PATH_DDY="${REPO}/.worktrees/drop-dirty-yes-test"
 stdout_ddy=$(wt new "drop dirty yes test" 2>/dev/null)
-assert_eq "created drop-dirty-yes worktree" "$WT_PATH_DDY" "$stdout_ddy"
+assert_eq "created abandon-dirty-yes worktree" "$WT_PATH_DDY" "$stdout_ddy"
 echo "uncommitted" > "${WT_PATH_DDY}/dirty-yes.txt"
 cd "$WT_PATH_DDY"
 _tmp_ddy=$(mktemp)
-stdout_ddy_out=$(wt drop --yes 2>"$_tmp_ddy")
+stdout_ddy_out=$(wt abandon --yes 2>"$_tmp_ddy")
 out_ddy=$(cat "$_tmp_ddy"); rm -f "$_tmp_ddy"
-assert_contains       "drop --yes dirty reports success"  "Dropped"  "$out_ddy"
-assert_dir_not_exists "dirty worktree removed"            "$WT_PATH_DDY"
+assert_contains       "abandon --yes dirty reports success"  "Dropped"  "$out_ddy"
+assert_dir_not_exists "dirty worktree removed"               "$WT_PATH_DDY"
 
-section "wt drop -y — short flag works"
+section "wt abandon -y — short flag works"
 cd "$REPO"
 git -C "$REPO" checkout -q dev
 WT_PATH_SY="${REPO}/.worktrees/short-yes-test"
@@ -504,7 +513,7 @@ stdout_sy=$(wt new "short yes test" 2>/dev/null)
 assert_eq "created short-yes worktree" "$WT_PATH_SY" "$stdout_sy"
 cd "$WT_PATH_SY"
 _tmp_sy=$(mktemp)
-stdout_sy_drop=$(wt drop -y 2>"$_tmp_sy"); rm -f "$_tmp_sy"
+stdout_sy_drop=$(wt abandon -y 2>"$_tmp_sy"); rm -f "$_tmp_sy"
 assert_eq             "stdout is main worktree path"  "$REPO"  "$stdout_sy_drop"
 assert_dir_not_exists "worktree removed"              "$WT_PATH_SY"
 
@@ -942,13 +951,13 @@ echo "init" > "$REG_PROJ/README.md"
 git -C "$REG_PROJ" add README.md
 git -C "$REG_PROJ" commit -q -m "init"
 
-section "registry — project unregistered after wt drop (no branches remain)"
+section "registry — project unregistered after wt abandon (no branches remain)"
 cd "$REG_PROJ"
 wt new "drop-cleanup" 2>/dev/null
 assert_contains "registry has reg-proj after new" "$REG_PROJ" "$(cat "$registry_file")"
 cd "$REG_PROJ/.worktrees/drop-cleanup"
-wt drop --yes 2>/dev/null
-assert_not_contains "registry cleared after last drop" "$REG_PROJ" "$(cat "$registry_file" 2>/dev/null)"
+wt abandon --yes 2>/dev/null
+assert_not_contains "registry cleared after last abandon" "$REG_PROJ" "$(cat "$registry_file" 2>/dev/null)"
 
 section "registry — project unregistered after wt finish (no branches remain)"
 cd "$REG_PROJ"
@@ -967,7 +976,7 @@ wt new "orphan-test" 2>/dev/null
 # Create an orphaned wt/* branch manually (no worktree dir)
 git -C "$REG_PROJ" branch wt/orphan-stays
 cd "$REG_PROJ/.worktrees/orphan-test"
-wt drop --yes 2>/dev/null  # .worktrees/ empty, but wt/orphan-stays still exists
+wt abandon --yes 2>/dev/null  # .worktrees/ empty, but wt/orphan-stays still exists
 assert_contains "registry preserved when branches remain" "$REG_PROJ" "$(cat "$registry_file" 2>/dev/null)"
 # Clean up the orphaned branch
 git -C "$REG_PROJ" branch -D wt/orphan-stays 2>/dev/null
@@ -977,7 +986,7 @@ section "registry — auto-unregister fires when both conditions met"
 cd "$REG_PROJ"
 wt new "final-cleanup" 2>/dev/null
 cd "$REG_PROJ/.worktrees/final-cleanup"
-wt drop --yes 2>/dev/null  # empty .worktrees/ + no wt/* branches now
+wt abandon --yes 2>/dev/null  # empty .worktrees/ + no wt/* branches now
 assert_not_contains "auto-unregister fired" "$REG_PROJ" "$(cat "$registry_file" 2>/dev/null)"
 
 # ─── wt retarget ─────────────────────────────────────────────────────────────

@@ -20,9 +20,9 @@ slug=fix-the-sidebar-overflow-bug
 branch=wt/fix-the-sidebar-overflow-bug
 ```
 
-**Reading:** `grep "^key=" file | head -1 | cut -d= -f2-` — no eval, no injection risk. All seven fields are required for `wt finish`/`wt drop`. `wt list` needs `branch`, `base_branch`, `description`, `project`, `created`.
+**Reading:** `grep "^key=" file | head -1 | cut -d= -f2-` — no eval, no injection risk. All seven fields are required for `wt finish`/`wt abandon`. `wt list` needs `branch`, `base_branch`, `description`, `project`, `created`.
 
-This file is the source of truth for `wt finish`/`wt drop` (knows where to merge back) and `wt list` (knows the task description). The file is excluded from `git status` via `.git/info/exclude` (worktree-local gitignore), so it doesn't inflate the dirty count.
+This file is the source of truth for `wt finish`/`wt abandon` (knows where to merge back) and `wt list` (knows the task description). The file is excluded from `git status` via `.git/info/exclude` (worktree-local gitignore), so it doesn't inflate the dirty count.
 
 **Go/Rust note:** Parse with a simple line scanner. Split on first `=`. Store as a struct:
 
@@ -104,7 +104,7 @@ A subprocess can't change the parent shell's working directory. The shell wrappe
 
 ```bash
 function wt() {
-  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "done" || "$1" == "drop" ]]; then
+  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" ]]; then
     local dir
     dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
   else
@@ -250,7 +250,7 @@ Used by `cmd_finish`, `cmd_sync`, and `cmd_pr`. Each caller handles conflict dif
 `cmd_pr` does NOT use `--prefer-local`: the PR targets the remote branch, so
 rebasing onto local-only commits would include unpushed base work in the PR diff.
 
-### `wt drop [--yes|-y]`
+### `wt abandon [--yes|-y]`
 
 ```
 1-3. Same as finish (verify worktree, read meta, validate slug/branch)
@@ -475,12 +475,12 @@ Ten issues found and fixed before first use:
 1. **Dead function removed** — `main_worktree_path()` was unused; deleted
 2. **stdout/stderr separation** — All `info()`/`success()` output now goes to stderr; stdout is reserved for path output to the zsh `cd` wrapper
 3. **Safe `.wt-meta` parsing** — Values single-quoted on write; `read_meta()` (grep/sed) replaces `source` — no eval, no injection risk
-4. **`wt done` cd-back** — zsh wrapper now handles `done` the same as `new`; `cmd_done` prints main worktree path on stdout for the wrapper to cd into
+4. **`wt finish` cd-back** — zsh wrapper handles `finish` the same as `new`; `cmd_finish` prints main worktree path on stdout for the wrapper to cd into
 5. **Lockfile detection fixed** — Checks `${worktree_path}/pnpm-lock.yaml` instead of project root (worktrees have their own file copies)
 6. **Nested worktree detection** — `wt new` from inside a worktree now resolves to the real main checkout instead of creating a nested worktree
 7. **ff failure reason shown** — Removed `2>/dev/null` from fast-forward attempt; actual git error shown as warning before fallback
 8. **Auto-gitignore** — `wt new` appends `.worktrees/` to `.gitignore` if missing
-9. **Self-kill protection** — `wt done` switches to project main tmux session before killing the current one; warns gracefully if no other session exists
+9. **Self-kill protection** — `wt finish` switches to project main tmux session before killing the current one; warns gracefully if no other session exists
 10. **Flexible find depth** — `wt list` no longer hardcodes `-mindepth 4 -maxdepth 4`; uses path pattern matching instead
 
 ### v3 fixes (second review pass)
@@ -489,21 +489,21 @@ Ten issues found and fixed before first use:
 12. **`.wt-meta` inflated dirty count** — Every worktree showed "1 dirty" because `.wt-meta` was untracked. Fixed by appending `.wt-meta` to `.git/info/exclude` (worktree-local gitignore, doesn't affect repo)
 13. **Color detection on wrong fd** — Colors were set based on stderr being a terminal (`-t 2`), but `wt list` writes to stdout. Piping `wt list | ...` leaked escape codes. Fixed by checking stdout (`-t 1`)
 14. **`find_project` didn't verify git repo** — Would silently accept any directory; git errors were confusing. Fixed by checking for `.git` dir or file before returning
-15. **Added `wt drop`** — New command to abandon a worktree without merging. Uses `git branch -D` (force). Same safety checks as `wt done` (dirty warning, Claude check, confirm)
+15. **Added `wt abandon`** — New command to abandon a worktree without merging. Uses `git branch -D` (force). Same safety checks as `wt finish` (dirty warning, Claude check, confirm)
 16. **Better ff failure message** — When fast-forward fails because target is checked out elsewhere, now shows which worktree has it checked out instead of a raw git error
 
 ### v4 fixes (TDD coverage pass — 2026-03-11)
 
 Expanded `wt-test` from 38 → 53 tests covering previously untested paths. Two tool bugs surfaced:
 
-17. **FF branch not deleted when main_wt is on a different branch** — `_cleanup_worktree` used `git branch -d` (safe-delete), which checks if the branch is merged into the *currently checked out* branch in `$main_wt`. After a fast-forward merge where `$main_wt` was temporarily on `main` (not `dev`), `-d` failed silently. Fixed by always using `-D` (force-delete) in `cmd_done` — the branch is guaranteed merged at that point.
+17. **FF branch not deleted when main_wt is on a different branch** — `_cleanup_worktree` used `git branch -d` (safe-delete), which checks if the branch is merged into the *currently checked out* branch in `$main_wt`. After a fast-forward merge where `$main_wt` was temporarily on `main` (not `dev`), `-d` failed silently. Fixed by always using `-D` (force-delete) in `cmd_finish` — the branch is guaranteed merged at that point.
 18. **`git merge --no-ff` and `git branch -d/-D` output leaked to stdout** — These git commands printed summaries to stdout, polluting the path returned to the zsh `cd` wrapper. Fixed by appending `>&2` to both in `_cleanup_worktree` and the `--no-ff` merge call.
 
 ### v5 fixes (first real-world walkthrough — 2026-03-12)
 
 Two bugs found during manual walkthrough:
 
-19. **`wt drop` didn't cd back after removing worktree** — Zsh wrapper only intercepted `new` and `done` for the `cd` behavior. `cmd_drop` already printed `$main_wt` on stdout (same as `cmd_done`), but the wrapper silently discarded it. Fixed by adding `"drop"` to the condition in the zsh wrapper.
+19. **`wt abandon` didn't cd back after removing worktree** — Zsh wrapper only intercepted `new` and `finish` for the `cd` behavior. `cmd_abandon` already printed `$main_wt` on stdout (same as `cmd_finish`), but the wrapper silently discarded it. Fixed by adding `"abandon"` to the condition in the zsh wrapper.
 20. **`wt list` took ~12s** — `find` had no depth limit, traversing all of `~/Documents/dev` and `~/Documents/lab` including `node_modules`, `.next`, build caches, etc. `.wt-meta` is always at exactly depth 4 from the search base (`<base>/<project>/.worktrees/<slug>/.wt-meta`). Fixed by adding `-maxdepth 4`.
 
 ### v6: `wt doctor` (2026-03-12)
@@ -525,8 +525,8 @@ Bugs found during implementation:
 
 Two changes shipped together:
 
-**1. `wt done` → `wt finish`**
-`done` is not a standard CLI verb. `finish` has `git flow finish` precedent and better describes the lifecycle action. `done` kept as a hidden alias for backward compat.
+**1. `wt finish`**
+`finish` has `git flow finish` precedent and best describes the lifecycle action.
 
 **2. Merge strategy → rebase + fast-forward**
 Old: ff-first, `--no-ff` fallback. Created merge commits when base had moved.
@@ -558,13 +558,13 @@ Extracted `wt` into a standalone public GitHub repo. Goal: anyone can clone and 
       .github/workflows/test.yml
     ```
 
-### v9: `--yes`/`-y` flag for `wt finish` and `wt drop` (2026-03-12)
+### v9: `--yes`/`-y` flag for `wt finish` and `wt abandon` (2026-03-12)
 
-**Problem:** `confirm()` calls `read -r response` from stdin. Claude Code's Bash tool has no interactive stdin — `read` gets EOF, confirmation always fails, `wt finish`/`wt drop` always abort.
+**Problem:** `confirm()` calls `read -r response` from stdin. Claude Code's Bash tool has no interactive stdin — `read` gets EOF, confirmation always fails, `wt finish`/`wt abandon` always abort.
 
-**Fix:** Add `--yes`/`-y` flag to both commands. When set, all `confirm()` calls are bypassed. The dirty-file check in `cmd_finish` is `error()` not `confirm()`, so it is intentionally **not** skipped — never auto-merge dirty work. The dirty-file check in `cmd_drop` **is** skipped — deliberately dropping dirty work is the point of `--yes` on drop.
+**Fix:** Add `--yes`/`-y` flag to both commands. When set, all `confirm()` calls are bypassed. The dirty-file check in `cmd_finish` is `error()` not `confirm()`, so it is intentionally **not** skipped — never auto-merge dirty work. The dirty-file check in `cmd_abandon` **is** skipped — deliberately abandoning dirty work is the point of `--yes` on abandon.
 
-33. **`wt finish --yes` / `wt drop --yes`** — Non-interactive flag skips confirmation prompts. Local `auto_yes=0` variable parsed at top of each function; `confirm()` calls wrapped in `if (( auto_yes == 0 ))`. Tests expanded from 79 → 95.
+33. **`wt finish --yes` / `wt abandon --yes`** — Non-interactive flag skips confirmation prompts. Local `auto_yes=0` variable parsed at top of each function; `confirm()` calls wrapped in `if (( auto_yes == 0 ))`. Tests expanded from 79 → 95.
 
 ### v10: Registry-based worktree discovery (2026-03-15)
 
@@ -574,7 +574,7 @@ Replaced `PROJECT_SEARCH_PATHS` / `WT_SEARCH_PATHS` / `~/.config/wt/config` with
 35. **Auto-unregister** — `_cleanup_worktree` checks if `.worktrees/` is empty and no `wt/*` branches remain after cleanup; if so, calls `_unregister_project`. Projects are removed automatically when fully cleaned up.
 36. **Stale entry detection** — `wt list` silently skips registry entries whose directories don't exist. `wt doctor` reports stale entries and offers to remove them.
 37. **Two-arg `wt new` removed** — `wt new <project> "<desc>"` form deleted. Users must `cd` into the repo. Project names were ambiguous (basename collisions, no canonical location).
-38. **`wt pr` dirty check moved earlier** — Dirty check now fires before the interactive base-branch prompt, consistent with `wt finish`/`wt drop`.
+38. **`wt pr` dirty check moved earlier** — Dirty check now fires before the interactive base-branch prompt, consistent with `wt finish`/`wt abandon`.
 39. **Tests switched to `WT_REGISTRY`** — All test invocations now use `WT_REGISTRY="$registry_file"` pointing at a temp file. Tests expanded from 95 → 156.
 40. **Bash 3.2 empty-array fix** — `"${arr[@]}"` with `set -u` throws "unbound variable" on bash <4.4 (macOS system bash 3.2) when the array is empty. Fixed with `"${arr[@]+"${arr[@]}"}"` guard in `cmd_list` and `cmd_doctor`. Tests: 156 → 158.
 
@@ -679,14 +679,14 @@ The bash `wt-test` has 71 tests as of v8. Each maps to a unit/integration test i
 | wt new — two-arg form errors | removed feature errors cleanly |
 | wt finish — dirty check | blocks on uncommitted changes |
 | wt finish — from main checkout | error message |
-| wt drop — dirty double-confirm | two prompts for dirty worktree |
-| wt drop — clean | single confirm, stdout=main_wt |
+| wt abandon — dirty double-confirm | two prompts for dirty worktree |
+| wt abandon — clean | single confirm, stdout=main_wt |
 | wt finish — rebase + ff | rebase + fast-forward happy path |
 | wt finish — diverged base | rebase handles base drift, linear history |
 | wt finish --yes | skips confirmation, no stdin pipe |
-| wt drop --yes | clean worktree, no stdin pipe |
-| wt drop --yes (dirty) | skips dirty + main confirms |
-| wt drop -y | short flag works |
+| wt abandon --yes | clean worktree, no stdin pipe |
+| wt abandon --yes (dirty) | skips dirty + main confirms |
+| wt abandon -y | short flag works |
 | wt list — empty | "No active worktrees" message |
 | wt doctor — clean | "all good" |
 | wt doctor — orphaned branch | detect + fix |

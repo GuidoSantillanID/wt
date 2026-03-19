@@ -81,7 +81,7 @@ All of these must be updated to reflect the registry change:
 - Remove `config — WT_SEARCH_PATHS env var` test section
 - Add tests:
   - Registry populated after `wt new` (project root appears in file)
-  - Project unregistered after last worktree removed via `wt finish`/`wt drop`
+  - Project unregistered after last worktree removed via `wt finish`/`wt abandon`
   - Project NOT unregistered if `wt/*` branches still exist (orphan case)
   - `wt list` finds worktrees via registry
   - `wt new` with two args errors out

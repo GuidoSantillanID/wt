@@ -4,14 +4,14 @@ Automates creating, tracking, rebasing, and cleaning up git worktrees for
 parallel development workflows. Create isolated branches in seconds, work on
 multiple features simultaneously, and merge cleanly with a linear history.
 
-Works great standalone. Works *especially* well with **Claude Code + tmux** — spin up a worktree per Claude task, keep each conversation isolated in its own branch and tmux session, finish or drop when done. See [tmux integration](#tmux-integration-optional) below.
+Works great standalone. Works *especially* well with **Claude Code + tmux** — spin up a worktree per Claude task, keep each conversation isolated in its own branch and tmux session, finish or abandon when done. See [tmux integration](#tmux-integration-optional) below.
 
 ```
 wt new "add dark mode toggle"     # create worktree + branch, cd into it
 wt finish                         # rebase + fast-forward + clean up
 wt sync                           # rebase onto latest base (keep it current)
 wt retarget [branch]              # change which branch this worktree targets
-wt drop                           # abandon without merging
+wt abandon                        # abandon without merging
 wt pr                             # push branch + open GitHub PR
 wt status                         # show current worktree info
 wt list                           # show all active worktrees
@@ -29,12 +29,12 @@ This symlinks `bin/wt` to `~/.local/bin/wt`. Make sure `~/.local/bin` is on your
 
 ### Shell wrapper
 
-Add this to `~/.zshrc` or `~/.bashrc` so that `wt new`, `wt finish`, and `wt drop` automatically `cd` your shell into the right directory:
+Add this to `~/.zshrc` or `~/.bashrc` so that `wt new`, `wt finish`, and `wt abandon` automatically `cd` your shell into the right directory:
 
 ```bash
 # zsh (~/.zshrc):
 function wt() {
-  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "done" || "$1" == "drop" ]]; then
+  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" ]]; then
     local dir
     dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
   else
@@ -44,7 +44,7 @@ function wt() {
 
 # bash (~/.bashrc) — identical syntax, just a different file:
 wt() {
-  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "done" || "$1" == "drop" ]]; then
+  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" ]]; then
     local dir
     dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
   else
@@ -90,7 +90,7 @@ wt retarget main           # switch to main
 wt retarget                # interactive picker
 
 # Abandon work without merging
-wt drop
+wt abandon
 
 # Push branch and open a GitHub PR (requires gh CLI)
 wt pr
@@ -112,7 +112,7 @@ wt doctor
 - A `.wt-meta` file in each worktree stores metadata (base branch, description, timestamps)
 - `.worktrees/` and `.wt-meta` are excluded from git via `.git/info/exclude` (never committed)
 - `wt finish` rebases the worktree branch onto its base, fast-forwards the base, and removes the worktree and branch — leaving a linear history
-- `wt drop` removes the worktree and branch without merging
+- `wt abandon` removes the worktree and branch without merging
 
 ## Commands reference
 
@@ -151,7 +151,6 @@ Pass `--force` to bypass the PR-open guard and finish locally even when a GitHub
 11. Kills tmux session `<project>/<slug>` if it exists (switches to project main session first if you're running from inside it)
 12. `cd`s back to main checkout (via shell wrapper)
 
-> `wt done` still works as an alias for backward compatibility.
 
 ### `wt sync`
 
@@ -182,7 +181,7 @@ wt retarget
 
 After retargeting, run `wt sync` if you want to rebase the working branch onto the new base immediately.
 
-### `wt drop [--yes|-y]`
+### `wt abandon [--yes|-y]`
 
 Abandons a worktree without merging — for dead-end experiments.
 
@@ -217,7 +216,7 @@ Pushes the worktree branch and opens a GitHub PR. Requires the [GitHub CLI](http
 
 Pass `--draft` to create a draft PR. Pass `--yes`/`-y` to skip all confirmation prompts.
 
-The worktree stays alive after `wt pr` — keep pushing updates. Use `wt finish` or `wt drop` when the PR is merged or abandoned.
+The worktree stays alive after `wt pr` — keep pushing updates. Use `wt finish` or `wt abandon` when the PR is merged or abandoned.
 
 ### `wt status`
 
@@ -247,7 +246,7 @@ Scans for and interactively fixes:
 
 ## tmux integration (optional)
 
-`wt` works without tmux. When run inside a tmux session, cleanup commands (`wt finish`, `wt drop`) will additionally kill the tmux session named `<project>/<slug>` if it exists.
+`wt` works without tmux. When run inside a tmux session, cleanup commands (`wt finish`, `wt abandon`) will additionally kill the tmux session named `<project>/<slug>` if it exists.
 
 ### Claude Code + tmux workflow
 
@@ -275,7 +274,7 @@ wt list
 
 Each Claude Code conversation gets its own branch, its own working tree, and its own tmux session. No context bleeding between tasks.
 
-If you want `wt finish`/`wt drop` to check whether your editor is still running before proceeding, override the `claude_running_in_session` function. For example, if you use a tmux option `@is_editor_running` to track this:
+If you want `wt finish`/`wt abandon` to check whether your editor is still running before proceeding, override the `claude_running_in_session` function. For example, if you use a tmux option `@is_editor_running` to track this:
 
 ```bash
 # In your shell rc, after sourcing the wt wrapper:
@@ -333,7 +332,7 @@ myapp/fix-logout-redirect
 - `wt new` excludes `.worktrees/` from `git status` via `.git/info/exclude` (repo-local, not committed). This keeps your `.gitignore` clean. To adopt `wt` as a team tool, add `.worktrees/` to the committed `.gitignore` instead.
 - Running `wt new` from inside an existing worktree is safe — it detects the context and creates the new worktree from the main checkout, not nested inside the current one.
 - Projects are auto-registered in `~/.config/wt/projects` on first `wt new` and auto-removed when the last worktree is cleaned up.
-- `wt drop` force-deletes the branch without merging. Use it when you want to discard the work entirely.
+- `wt abandon` force-deletes the branch without merging. Use it when you want to discard the work entirely.
 
 ## Requirements
 

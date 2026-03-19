@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`wt` is a single-file bash CLI (`bin/wt`, ~1130 lines) that automates git worktree lifecycle: create, sync, finish (rebase+ff+cleanup), drop, PR, list, doctor. Designed for parallel Claude Code + tmux workflows.
+`wt` is a single-file bash CLI (`bin/wt`, ~1130 lines) that automates git worktree lifecycle: create, sync, finish (rebase+ff+cleanup), abandon, PR, list, doctor. Designed for parallel Claude Code + tmux workflows.
 
 ## Commands
 
@@ -22,11 +22,11 @@ Requires bash 4+ (`brew install bash` on macOS). CI runs on macOS + Ubuntu.
 
 ### Stdout/stderr contract
 
-Commands that change directories (`new`, `finish`, `drop`) print **only the target path** to stdout. The shell wrapper (`function wt()` in user's rc file) captures this for `cd`. **All UI** (info, success, warn, error) goes to stderr. `wt list` is the exception — its table goes to stdout (for piping). Breaking this contract breaks the shell wrapper.
+Commands that change directories (`new`, `finish`, `abandon`) print **only the target path** to stdout. The shell wrapper (`function wt()` in user's rc file) captures this for `cd`. **All UI** (info, success, warn, error) goes to stderr. `wt list` is the exception — its table goes to stdout (for piping). Breaking this contract breaks the shell wrapper.
 
 ### Data model: `.wt-meta`
 
-Plain `key=value` file in each worktree root. Seven fields: `base_branch`, `created`, `description`, `project`, `project_root`, `slug`, `branch`. Read with `read_meta()` (grep+cut, never eval). Source of truth for `finish`/`drop`/`sync`/`pr`/`status`.
+Plain `key=value` file in each worktree root. Seven fields: `base_branch`, `created`, `description`, `project`, `project_root`, `slug`, `branch`. Read with `read_meta()` (grep+cut, never eval). Source of truth for `finish`/`abandon`/`sync`/`pr`/`status`.
 
 ### Registry
 
@@ -34,7 +34,7 @@ Plain `key=value` file in each worktree root. Seven fields: `base_branch`, `crea
 
 ### Command dispatch
 
-`main()` at bottom of `bin/wt` dispatches to `cmd_<name>()` functions. Aliases: `done`→`finish`, `st`→`status`, `ls`→`list`.
+`main()` at bottom of `bin/wt` dispatches to `cmd_<name>()` functions. Aliases: `st`→`status`, `ls`→`list`.
 
 ### Tests
 
