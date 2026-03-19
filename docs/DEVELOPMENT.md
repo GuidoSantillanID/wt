@@ -140,7 +140,7 @@ fi
 | Dependency | Usage | Notes |
 |---|---|---|
 | `git` | All operations | Requires 2.5+ for `git worktree` |
-| `tmux` | Session kill on cleanup; `display-message -p '#S'` | Optional — all tmux paths are guarded by `[[ -n "${TMUX:-}" ]]` |
+| `tmux` | Detect if running inside tmux (via `$TMUX`) to show close-window hint | Optional — guarded by `[[ -n "${TMUX:-}" ]]` |
 | `find` | `wt doctor` — inner checks only (branch/worktree loops) | POSIX `find` — no GNU extensions used |
 | `date` | `human_age()` — timestamp to seconds | GNU `date -d` or BSD `date -j -f` |
 | `sed`, `tr`, `cut` | `slugify()`, `read_meta()` | POSIX |
@@ -186,10 +186,9 @@ Strategy is auto-detected from `git rev-list --merges <base_branch>..HEAD`:
 4. Validate: no uncommitted changes (git status --porcelain)  ← not skipped by --yes or --force
 5. Non-skippable: if untracked files exist → warn + confirm "Untracked files will be lost"
    ← --yes does NOT skip; only --force bypasses; --dry-run skips prompt (shows warning in output)
-6. [if TMUX] Check claude_running_in_session (stubbed to false by default) → warn + confirm  ← skipped by --yes
-7. PR-flow detection (if gh available): merged → cleanup+return; open → error (or --force continues); else → fall through
-8. Detect strategy: has_merges=$(git rev-list --merges <base_branch>..HEAD | head -1)
-9. get_main_worktree()
+6. PR-flow detection (if gh available): merged → cleanup+return; open → error (or --force continues); else → fall through
+7. Detect strategy: has_merges=$(git rev-list --merges <base_branch>..HEAD | head -1)
+8. get_main_worktree()
 
 SQUASH PATH (has_merges non-empty):
   10. Pre-flight: git merge-base --is-ancestor <base_branch> HEAD
@@ -324,12 +323,11 @@ by `wt update`.
 4. [if dirty] warn + confirm "drop anyway?"  ← skipped by --yes
 5. Non-skippable: count commits ahead of base_branch; if > 0 → warn + list commits + confirm
    ← --yes does NOT skip; only --force bypasses
-6. [if TMUX] claude_running_in_session check  ← skipped by --yes
-7. Confirm: "Drop <branch>? (no merge)"  ← skipped by --yes
-8. --dry-run: print plan (commit count, worktree path), return 0 (no stdout)
-9. get_main_worktree()
-10. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true, project_root)
-11. Print main_wt to stdout
+6. Confirm: "Drop <branch>? (no merge)"  ← skipped by --yes
+7. --dry-run: print plan (commit count, worktree path), return 0 (no stdout)
+8. get_main_worktree()
+9. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true, project_root)
+10. Print main_wt to stdout
 ```
 
 ### `_cleanup_worktree` (shared)
@@ -346,11 +344,7 @@ delete_mode: "force" → git branch -D (always used — see note below)
    - Check if <project_root>/.worktrees/ is empty or absent
    - Check if no wt/* branches remain: git branch --list 'wt/*' | wc -l == 0
    - If both: _unregister_project(project_root)
-4. [if TMUX]
-   a. session_name = "<project>/<slug>" (dots → underscores)
-   b. if tmux session exists:
-      - if current session == session_name: switch to "<project>" session first (else warn, return)
-      - tmux kill-session -t <session_name>
+4. [if TMUX] Print bold "You can now close this tmux window." hint to stderr
 ```
 
 ### `wt list`
@@ -464,7 +458,7 @@ The registry is a plain text file (`~/.config/wt/projects`, one path per line). 
 |---|---|---|
 | 1 | `wt new` from inside a worktree | Detect `.git` file vs dir; redirect to main checkout via `get_main_worktree()`; register main checkout path |
 | 2 | Base branch checked out in any worktree during ff | Can't `git fetch . HEAD:<base>` (ref locked); scan all worktrees via `git worktree list --porcelain` to find whichever has base checked out; run `merge --ff-only` there |
-| 3 | `wt finish`/`drop` from same tmux session being killed | Switch to project main session first; if no other session exists, warn and skip kill |
+| 3 | `wt finish`/`abandon` inside tmux | Print a reminder to close the current window; session is never killed automatically |
 | 4 | `wt new` with apostrophes in description | Slugify strips them; `.wt-meta` preserves them verbatim (no shell quoting) |
 | 5 | `wt list` with dirty worktrees | Color the dirty count yellow; `.wt-meta` excluded via `info/exclude` so it doesn't count |
 | 6 | `wt doctor` on repos that never used `wt` | Skip repos without a `.worktrees/` dir |
@@ -563,7 +557,7 @@ Ten issues found and fixed before first use:
 6. **Nested worktree detection** — `wt new` from inside a worktree now resolves to the real main checkout instead of creating a nested worktree
 7. **ff failure reason shown** — Removed `2>/dev/null` from fast-forward attempt; actual git error shown as warning before fallback
 8. **Auto-gitignore** — `wt new` appends `.worktrees/` to `.gitignore` if missing
-9. **Self-kill protection** — `wt finish` switches to project main tmux session before killing the current one; warns gracefully if no other session exists
+9. **tmux hint instead of session kill** — `wt finish` and `wt abandon` print a bold "close this tmux window" reminder when inside tmux; no session is killed automatically
 10. **Flexible find depth** — `wt list` no longer hardcodes `-mindepth 4 -maxdepth 4`; uses path pattern matching instead
 
 ### v3 fixes (second review pass)
@@ -623,7 +617,7 @@ Extracted `wt` into a standalone public GitHub repo. Goal: anyone can clone and 
 
 23. **Configurable search paths** — Replaced hardcoded paths with a three-tier config system: `WT_SEARCH_PATHS` env var → `~/.config/wt/config` → defaults. Implemented as `_load_search_paths()` called at startup. (Superseded in v10.)
 24. **Cross-platform date parsing** — `human_age()` now tries GNU `date -d` first (Linux), falls back to BSD `date -j -f` (macOS).
-25. **`claude_running_in_session()` stubbed to `false`** — Removed personal tmux option check. Function now always returns false. Documented as an override hook.
+25. **`claude_running_in_session()` stubbed to `false`** — Removed personal tmux option check. Function always returned false. Documented as an override hook at the time; removed entirely in v16.
 26. **Removed personal doc references** — Lines referencing local dev files removed from header and help output. README replaces the usage guide.
 27. **Python package manager detection improved** — Added `uv.lock` → `uv` and `poetry.lock` → `poetry` detection before the `pip` fallback. Order: `uv.lock → poetry.lock → requirements.txt → pyproject.toml`.
 28. **Shell wrapper documented for both zsh and bash** — Header now shows both `.zshrc` and `.bashrc` forms.
@@ -730,6 +724,16 @@ Two parallel feature branches merged:
 63. **`wt finish` squash path** — When `git rev-list --merges <base>..HEAD` is non-empty (merge commits from `wt update`), `wt finish` uses `git commit-tree HEAD^{tree} -p <base> -m <description>` to create a single squash commit instead of rebasing. The squash commit has the full merged tree and the base as its only parent — a guaranteed fast-forward. Pre-flight check: `git merge-base --is-ancestor <base> HEAD` must pass; if not, the user is prompted to run `wt update` first.
 
 64. **`wt pr` skips rebase when merge commits present** — `cmd_pr` checks `git rev-list --merges <base>..HEAD` before calling `_rebase_onto_base`. If merge commits are present, the rebase is skipped. `--force-with-lease` push works correctly in both cases.
+
+### v16: Replace tmux session-kill with close-window hint (2026-03-19)
+
+**Problem:** `_cleanup_worktree` killed the tmux session named `<project>/<slug>` on finish/abandon. This didn't match real usage — users keep multiple tmux windows in one session and don't want the session destroyed. The code was also effectively dead: `claude_running_in_session()` always returned `false`, the session name format didn't match actual session names, and `tmux_session_exists()` was never true in practice.
+
+**Fix:** Removed `tmux_session_exists()`, `claude_running_in_session()`, the editor-still-running warning blocks in `cmd_finish` and `cmd_abandon`, and the session-kill block in `_cleanup_worktree`. Replaced with a single bold hint at the end of `_cleanup_worktree`: `"You can now close this tmux window."` — only shown when `$TMUX` is set. The user stays in control of their tmux layout.
+
+55. **Dead tmux session-kill code removed** — `tmux_session_exists()`, `claude_running_in_session()`, editor-running checks, and the `tmux kill-session` call in `_cleanup_worktree` were all removed.
+
+56. **Tmux close-window hint added** — `_cleanup_worktree` now prints a bold reminder to close the current tmux window when `$TMUX` is set. Fires once, after git cleanup, before the caller's success message.
 
 ---
 

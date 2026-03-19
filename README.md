@@ -154,18 +154,17 @@ Pass `--dry-run` to preview what would happen without making any changes. No std
 1. Verifies you're in a worktree (not the main checkout) — errors if not
 2. Aborts if there are tracked uncommitted changes — not skipped by `--yes` or `--force`
 3. **Non-skippable:** warns if there are untracked files (they will be permanently deleted) — prompts even with `--yes`; only `--force` bypasses
-4. Warns if an editor is still running in this worktree's tmux session (requires `claude_running_in_session()` override; no-op by default) — skipped by `--yes`
-5. If `gh` is installed: checks for a GitHub PR on the current branch
+4. If `gh` is installed: checks for a GitHub PR on the current branch
    - **PR merged**: confirms cleanup (skipped with `--yes`), removes worktree + branch without rebasing, returns
    - **PR open**: errors unless `--force` is passed; with `--force`, proceeds to local integration flow
    - **No PR / gh unavailable**: continues with local integration flow below
-6. Detects strategy (rebase vs squash) based on merge commits in `<base>..HEAD`
+5. Detects strategy (rebase vs squash) based on merge commits in `<base>..HEAD`
    - **Squash path**: confirms `Squash-merge wt/<slug> into <base>?` — skipped by `--yes` and `--dry-run`. Requires base to be an ancestor of HEAD (i.e. `wt update` was run). If base has new commits since the last `wt update`, errors with a prompt to run `wt update` again.
    - **Rebase path**: confirms `Rebase wt/<slug> onto <base> and fast-forward?` — skipped by `--yes` and `--dry-run`. Fetches remote base (best-effort). Rebases — SIGINT-trapped; aborts cleanly on Ctrl+C; aborts and prints manual instructions on conflict.
-7. Fast-forwards base branch to the integrated tip (checks all worktrees, not just main)
-8. Removes worktree directory and branch
-9. Kills tmux session `<project>/<slug>` if it exists (switches to project main session first if you're running from inside it)
-10. `cd`s back to main checkout (via shell wrapper)
+6. Fast-forwards base branch to the integrated tip (checks all worktrees, not just main)
+7. Removes worktree directory and branch
+8. Inside tmux: prints a reminder to close the current window
+9. `cd`s back to main checkout (via shell wrapper)
 
 
 ### `wt sync`
@@ -235,13 +234,12 @@ Pass `--dry-run` to preview what would happen without making any changes.
 1. Verifies you're in a worktree
 2. Warns if there are uncommitted changes — asks to confirm before proceeding — skipped by `--yes`
 3. **Non-skippable:** warns if the branch has commits not in the base branch (unpushed work that will be lost) — prompts even with `--yes`; only `--force` bypasses
-4. Warns if an editor is still running in this session (requires `claude_running_in_session()` override) — skipped by `--yes`
-5. Final confirmation: `Drop wt/<slug>? (no merge) [y/N]` — skipped by `--yes`
+4. Final confirmation: `Drop wt/<slug>? (no merge) [y/N]` — skipped by `--yes`
 
 **On success:**
 - Worktree directory removed
 - Branch force-deleted (`git branch -D` — the branch was never merged)
-- Tmux session killed
+- Inside tmux: prints a reminder to close the current window
 - `cd`s back to main checkout (via shell wrapper)
 
 ### `wt pr [--draft] [--yes|-y]`
@@ -295,44 +293,32 @@ Pass `--dry-run` to report all issues without fixing anything.
 
 ## tmux integration (optional)
 
-`wt` works without tmux. When run inside a tmux session, cleanup commands (`wt finish`, `wt abandon`) will additionally kill the tmux session named `<project>/<slug>` if it exists.
+`wt` works without tmux. When run inside a tmux session, `wt finish` and `wt abandon` print a bold reminder to close the current window after cleanup completes. Your session is never killed automatically — you stay in control of your tmux layout.
 
 ### Claude Code + tmux workflow
 
-This is the sweet spot `wt` was designed for. With [tmux-sessionizer](https://github.com/ThePrimeagen/tmux-sessionizer) (or similar), each worktree becomes its own tmux session automatically:
+This is the sweet spot `wt` was designed for. With [tmux-sessionizer](https://github.com/ThePrimeagen/tmux-sessionizer) (or similar), each worktree becomes its own tmux window or session automatically:
 
 ```bash
 # Start a Claude task in isolation (from inside the project dir)
 cd myapp
 wt new "implement dark mode"
 # → creates myapp/.worktrees/implement-dark-mode/
-# → tmux-sessionizer picks it up as session "myapp/implement-dark-mode"
-# → run `claude` in that session — fully isolated branch
+# → open a new tmux window there and run `claude` — fully isolated branch
 
 # While Claude works, start another task in parallel
 wt new "fix login redirect"
-# → separate worktree, separate branch, separate tmux session
+# → separate worktree, separate branch, separate window
 
 # Claude finishes dark mode → rebase + clean up
 cd myapp/.worktrees/implement-dark-mode
-wt finish   # rebases, fast-forwards, kills tmux session, cd's back
+wt finish   # rebases, fast-forwards, reminds you to close the window, cd's back
 
 # All tasks visible at a glance
 wt list
 ```
 
-Each Claude Code conversation gets its own branch, its own working tree, and its own tmux session. No context bleeding between tasks.
-
-If you want `wt finish`/`wt abandon` to check whether your editor is still running before proceeding, override the `claude_running_in_session` function. For example, if you use a tmux option `@is_editor_running` to track this:
-
-```bash
-# In your shell rc, after sourcing the wt wrapper:
-claude_running_in_session() {
-  local val
-  val=$(tmux show-option -t "$1" -wv @is_editor_running 2>/dev/null || echo "")
-  [[ "$val" == "1" ]]
-}
-```
+Each Claude Code conversation gets its own branch and its own working tree. No context bleeding between tasks.
 
 ## Common workflows
 

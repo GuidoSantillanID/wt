@@ -177,18 +177,6 @@ read_meta() {
   grep "^${key}=" "$file" 2>/dev/null | head -1 | cut -d= -f2- || true
 }
 
-# Check if a tmux session exists
-tmux_session_exists() {
-  tmux has-session -t "$1" 2>/dev/null
-}
-
-# Returns true if a Claude Code (or custom editor) process is running in the session.
-# Hook: override this function for custom editor detection.
-# Default: always returns false (no active-editor check).
-claude_running_in_session() {
-  false
-}
-
 # Human-readable age from a YYYY-MM-DDTHH:MM:SS timestamp
 # Supports both GNU date (Linux) and BSD date (macOS).
 human_age() {
@@ -274,6 +262,7 @@ NOTES
   • `wt finish` auto-detects merge commits from `wt update` and uses squash instead of rebase
   • Projects are tracked in ${XDG_CONFIG_HOME:-~/.config}/wt/projects (one path per line)
   • Override registry path: export WT_REGISTRY=/path/to/registry
+  • Inside tmux, cleanup commands (finish/abandon) show a reminder to close the current window
 HELP
 }
 
@@ -671,18 +660,6 @@ cmd_finish() {
     fi
   fi
 
-  # Safety: editor still running (tmux only; override claude_running_in_session() to customize)
-  if [[ -n "${TMUX:-}" ]]; then
-    local session_name="${project}/${slug}"
-    session_name="${session_name//./_}"
-    if tmux_session_exists "$session_name" && claude_running_in_session "$session_name"; then
-      warn "Editor is still running in session '${session_name}'"
-      if (( auto_yes == 0 )); then
-        confirm "Proceed anyway?" || exit 0
-      fi
-    fi
-  fi
-
   local main_wt
   main_wt=$(get_main_worktree)
   [[ -z "$main_wt" ]] && error "Could not determine main worktree path"
@@ -997,17 +974,6 @@ cmd_abandon() {
     fi
   fi
 
-  # Safety: editor still running (tmux only; override claude_running_in_session() to customize)
-  if [[ -n "${TMUX:-}" ]]; then
-    local session_name="${project}/${slug}"
-    session_name="${session_name//./_}"
-    if tmux_session_exists "$session_name" && claude_running_in_session "$session_name"; then
-      warn "Editor is still running in session '${session_name}'"
-      if (( auto_yes == 0 )); then
-        confirm "Proceed anyway?" || exit 0
-      fi
-    fi
-  fi
 
   if (( auto_yes == 0 )); then
     confirm "Drop ${BOLD}${branch}${RESET}? (no merge)" || { info "Aborted."; exit 0; }
@@ -1179,7 +1145,7 @@ cmd_status() {
   fi
 }
 
-# Shared cleanup: remove worktree dir, delete branch, kill tmux session
+# Shared cleanup: remove worktree dir, delete branch
 # Args: repo_root branch main_wt project slug delete_mode [project_root]
 # delete_mode: "merged" → git branch -d (safe); "force" → git branch -D
 _cleanup_worktree() {
@@ -1214,26 +1180,9 @@ _cleanup_worktree() {
     fi
   fi
 
-  # Kill tmux session — escape our own session first if needed
+  # Hint: user can close this tmux window now
   if [[ -n "${TMUX:-}" ]]; then
-    local session_name="${project}/${slug}"
-    session_name="${session_name//./_}"
-    if tmux_session_exists "$session_name"; then
-      local current_session
-      current_session=$(tmux display-message -p '#S' 2>/dev/null || echo "")
-      if [[ "$current_session" == "$session_name" ]]; then
-        if tmux_session_exists "$project"; then
-          tmux switch-client -t "$project"
-        elif tmux_session_exists "${project//./_}"; then
-          tmux switch-client -t "${project//./_}"
-        else
-          warn "Can't kill own session '${session_name}' — no other session to switch to. Kill manually."
-          return 0
-        fi
-      fi
-      info "Killing tmux session '${session_name}'..."
-      tmux kill-session -t "$session_name" 2>/dev/null || true
-    fi
+    echo -e "\n  ${BOLD}You can now close this tmux window.${RESET}\n" >&2
   fi
 }
 

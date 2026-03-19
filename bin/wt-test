@@ -2218,6 +2218,52 @@ git -C "$SQ_PR_PROJ" worktree remove "$SQ_PR_WT" --force 2>/dev/null || true
 git -C "$SQ_PR_PROJ" branch -D "wt/sq-pr-test" 2>/dev/null || true
 rm -rf "$SQ_PR_MOCK" "$SQ_PR_BARE"
 
+# ─── tmux hint message ───────────────────────────────────────────────────────
+
+section "tmux hint — wt finish with TMUX set shows close-window message"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_TMUX_FIN="${REPO}/.worktrees/tmux-hint-finish"
+WT_REGISTRY="$registry_file" bash "$WT" new "tmux hint finish" 2>/dev/null
+echo "work" > "${WT_TMUX_FIN}/work.txt"
+git -C "$WT_TMUX_FIN" add work.txt
+git -C "$WT_TMUX_FIN" commit -q -m "tmux hint finish work"
+git -C "$REPO" checkout -q main
+cd "$WT_TMUX_FIN"
+out_tmux_fin=$(TMUX=fake WT_REGISTRY="$registry_file" bash "$WT" finish --yes 2>&1) || true
+assert_contains "finish with TMUX shows close-window hint" "close this tmux window" "$out_tmux_fin"
+
+section "tmux hint — wt finish without TMUX does not show close-window message"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_NOTMUX_FIN="${REPO}/.worktrees/notmux-hint-finish"
+WT_REGISTRY="$registry_file" bash "$WT" new "notmux hint finish" 2>/dev/null
+echo "work2" > "${WT_NOTMUX_FIN}/work2.txt"
+git -C "$WT_NOTMUX_FIN" add work2.txt
+git -C "$WT_NOTMUX_FIN" commit -q -m "notmux hint finish work"
+git -C "$REPO" checkout -q main
+cd "$WT_NOTMUX_FIN"
+out_notmux_fin=$(unset TMUX; WT_REGISTRY="$registry_file" bash "$WT" finish --yes 2>&1) || true
+assert_not_contains "finish without TMUX does not show hint" "close this tmux window" "$out_notmux_fin"
+
+section "tmux hint — wt abandon with TMUX set shows close-window message"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_TMUX_ABN="${REPO}/.worktrees/tmux-hint-abandon"
+WT_REGISTRY="$registry_file" bash "$WT" new "tmux hint abandon" 2>/dev/null
+cd "$WT_TMUX_ABN"
+out_tmux_abn=$(TMUX=fake WT_REGISTRY="$registry_file" bash "$WT" abandon --yes 2>&1) || true
+assert_contains "abandon with TMUX shows close-window hint" "close this tmux window" "$out_tmux_abn"
+
+section "tmux hint — wt abandon without TMUX does not show close-window message"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_NOTMUX_ABN="${REPO}/.worktrees/notmux-hint-abandon"
+WT_REGISTRY="$registry_file" bash "$WT" new "notmux hint abandon" 2>/dev/null
+cd "$WT_NOTMUX_ABN"
+out_notmux_abn=$(unset TMUX; WT_REGISTRY="$registry_file" bash "$WT" abandon --yes 2>&1) || true
+assert_not_contains "abandon without TMUX does not show hint" "close this tmux window" "$out_notmux_abn"
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 echo ""
