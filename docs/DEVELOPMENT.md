@@ -196,7 +196,8 @@ SQUASH PATH (has_merges non-empty):
   11. squash_commit=$(git commit-tree HEAD^{tree} -p <base_branch> -m <description>)
       (tree = HEAD's tree; parent = base_branch only; message = description from .wt-meta)
   12. Fast-forward base to squash_commit (Strategy 1/2, same as rebase path)
-  13. _cleanup_worktree + return
+  13. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true)
+  14. Print main_wt to stdout (shell wrapper uses this to cd back)
 
 REBASE PATH (has_merges empty):
   9. Confirm: "Rebase <branch> onto <base_branch> and fast-forward?"  ← skipped by --yes

@@ -77,6 +77,6 @@ Tests define expected behavior. If a test fails, the implementation is wrong —
 Every feature or change must update **all** relevant docs before the work is considered complete:
 
 - `README.md` — command reference and usage examples
-- `docs/DEVELOPMENT.md` — architecture and internals
+- `docs/DEVELOPMENT.md` — architecture and internals (reference only; do not read during debugging or bug investigation)
 - `CONTRIBUTING.md` — contributor instructions
 - Inline help text in `bin/wt` (the comment block at the top and any `wt help` output)

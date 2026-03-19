@@ -276,9 +276,12 @@ git -C "$WT_PATH_FF" commit -q -m "ff commit"
 # Switch main checkout to main (not dev) so dev ref can be fast-forwarded
 git -C "$REPO" checkout -q main
 cd "$WT_PATH_FF"
-out_ff=$(printf "y\n" | wt finish 2>&1)
+_tmp_ff=$(mktemp)
+stdout_ff=$(printf "y\n" | wt finish 2>"$_tmp_ff")
+out_ff=$(cat "$_tmp_ff"); rm -f "$_tmp_ff"
 assert_contains       "rebase reported"          "Rebase successful" "$out_ff"
 assert_contains       "fast-forward reported"    "Fast-forward" "$out_ff"
+assert_eq             "finish stdout is main worktree path" "$REPO" "$stdout_ff"
 assert_dir_not_exists "ff worktree removed"      "$WT_PATH_FF"
 branch_ff=$(git -C "$REPO" rev-parse --verify "wt/ff-test-task" 2>/dev/null || echo "gone")
 assert_eq             "ff branch deleted"        "gone" "$branch_ff"
@@ -374,6 +377,7 @@ _tmp_fos=$(mktemp)
 stdout_fos=$(wt finish --yes 2>"$_tmp_fos")
 out_fos=$(cat "$_tmp_fos"); rm -f "$_tmp_fos"
 assert_contains       "finish succeeds despite stale local base" "Done!"  "$out_fos"
+assert_eq             "finish stdout is main worktree path"      "$REPO"  "$stdout_fos"
 assert_dir_not_exists "worktree removed"                         "$WT_PATH_FOS"
 branch_fos=$(git -C "$REPO" rev-parse --verify "wt/finish-origin-stale" 2>/dev/null || echo "gone")
 assert_eq             "branch deleted"                           "gone"   "$branch_fos"
@@ -468,6 +472,7 @@ _tmp_fmy=$(mktemp)
 stdout_fin_my=$(PATH="${MOCK_BIN_FIN}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" finish --yes 2>"$_tmp_fmy")
 out_fin_my=$(cat "$_tmp_fmy"); rm -f "$_tmp_fmy"
 assert_contains       "cleanup succeeds"      "Done!"           "$out_fin_my"
+assert_eq             "stdout is main path"   "$REPO"           "$stdout_fin_my"
 assert_dir_not_exists "worktree removed"      "$WT_PATH_FMY"
 branch_fmy=$(git -C "$REPO" rev-parse --verify "wt/finish-merged-yes-test" 2>/dev/null || echo "gone")
 assert_eq             "branch deleted"        "gone"            "$branch_fmy"
@@ -1740,6 +1745,7 @@ stdout_sq=$(wt finish --yes 2>"$_tmp_sq")
 out_sq=$(cat "$_tmp_sq"); rm -f "$_tmp_sq"
 assert_contains       "squash finish reports Done"           "Done!"        "$out_sq"
 assert_contains       "squash finish uses squash strategy"   "squash"       "$out_sq"
+assert_eq             "finish stdout is main worktree path"  "$SQ_PROJ"     "$stdout_sq"
 assert_dir_not_exists "sq worktree removed"                  "$SQ_WT"
 branch_sq=$(git -C "$SQ_PROJ" rev-parse --verify "wt/sq-test-task" 2>/dev/null || echo "gone")
 assert_eq             "sq branch deleted"                    "gone"         "$branch_sq"
