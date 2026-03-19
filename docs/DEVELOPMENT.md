@@ -183,11 +183,11 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 5. [if TMUX] Check claude_running_in_session (stubbed to false by default) → warn + confirm  ← skipped by --yes
 6. Confirm: "Rebase <branch> onto <base_branch> and fast-forward?"  ← skipped by --yes
 7. get_main_worktree()
-8. _rebase_onto_base(base_branch, branch)
+8. _rebase_onto_base(base_branch, branch, --prefer-local)
    → on conflict: git rebase --abort; print "Run wt sync first"; exit 1
 10. Fast-forward:
     a. Try: git fetch . HEAD:<base_branch> (works if base_branch not checked out here)
-    b. Fallback: git -C <main_wt> merge --ff-only <branch> (if main_wt is on base_branch)
+    b. Fallback: scan all worktrees for one with base_branch checked out; merge --ff-only there
     c. Else: print manual instructions; exit 1
 11. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true)
 12. Print main_wt to stdout (shell wrapper uses this to cd back)
@@ -200,12 +200,12 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 2. Verify: repo_root/.git is a FILE → in a worktree; dir → error "main checkout"
 3. Read .wt-meta: base_branch, branch, description
 4. Validate: no uncommitted changes (git status --porcelain)
-5. _rebase_onto_base(base_branch, branch)
+5. _rebase_onto_base(base_branch, branch, --prefer-local)
    → on conflict: print continue/abort instructions; exit 1
 6. Print success — no stdout output, no cleanup
 ```
 
-Key difference from `wt finish`: rebases onto `origin/<base_branch>` (not local), no confirmation, no fast-forward, no cleanup, no cd.
+Key difference from `wt finish`: no confirmation, no fast-forward, no cleanup, no cd.
 
 ### `wt retarget [branch]`
 
@@ -226,13 +226,18 @@ Key difference from `wt finish`: rebases onto `origin/<base_branch>` (not local)
 9. No stdout output (no cd needed)
 ```
 
-### `_rebase_onto_base base_branch branch` (shared helper)
+### `_rebase_onto_base base_branch branch [--prefer-local]` (shared helper)
 
 ```
 1. git fetch origin <base_branch> >&2 (warn on failure, continue)
 2. Resolve rebase_target:
-   - origin/<base_branch> if ref exists
-   - else fall back to local <base_branch>
+   Without --prefer-local (default, used by wt pr):
+   - origin/<base_branch> if ref exists; else local <base_branch>
+   With --prefer-local (used by wt finish, wt sync):
+   - origin ahead or equal → origin/<base_branch>
+   - local strictly ahead  → <base_branch> (local)
+   - diverged              → origin/<base_branch> + warn
+   - no origin ref         → <base_branch> (local)
 3. git rebase <rebase_target> >&2
 4. Returns git rebase exit code — conflict handling left to caller
 ```
@@ -241,6 +246,9 @@ Used by `cmd_finish`, `cmd_sync`, and `cmd_pr`. Each caller handles conflict dif
 - `cmd_finish`: `git rebase --abort`, print "Run 'wt sync' first", exit 1
 - `cmd_sync`: leave in conflict state, print continue/abort instructions, exit 1
 - `cmd_pr`: leave in conflict state, print continue/abort instructions, exit 1
+
+`cmd_pr` does NOT use `--prefer-local`: the PR targets the remote branch, so
+rebasing onto local-only commits would include unpushed base work in the PR diff.
 
 ### `wt drop [--yes|-y]`
 
@@ -449,6 +457,8 @@ Changed in v7: replaced with rebase + fast-forward strategy. Old: ff-first, `--n
 
 Current strategy: try (1) first. On failure, scan ALL worktrees (not just main) using `git worktree list --porcelain` to find whichever one has base checked out; run `merge --ff-only` there. This handles the three-worktree scenario where base is checked out in a non-main worktree.
 
+**Rebase target / ff target consistency:** `finish` and `sync` pass `--prefer-local` to `_rebase_onto_base`. Without it, the helper always prefers `origin/base` — correct for `wt pr` (PR targets remote state), but wrong for `finish`/`sync`: if local base is ahead of origin (e.g. previous finishes not pushed), rebasing onto stale origin produces a feature tip that local base is NOT an ancestor of, so the fast-forward fails. With `--prefer-local`, the helper uses whichever ref is further ahead.
+
 ```
 Old: ff → --no-ff fallback → conflict abort
 New: rebase onto base → guaranteed ff → conflict abort (at rebase stage)
@@ -595,6 +605,12 @@ Continuation of the v11 robustness audit. All fixes TDD: failing test first, the
 49. **`wt retarget` interactive picker crashed on EOF** (S4) — `read -r choice` in the interactive picker returned non-zero on EOF (stdin closed). With `set -e`, this caused the script to exit with code 1 instead of showing "Aborted." and exiting cleanly. Affects non-interactive contexts (scripts, CI, stdin redirected to /dev/null). Fixed by appending `|| true` to the `read` call.
 
 50. **Picker logic duplicated between `retarget` and `pr`** (M4) — `cmd_retarget` and `cmd_pr` each contained an independent copy of the remote-branch picker (list, number, read, validate). Extracted into `_pick_base_branch <exclude_branch> <current_base> [--no-fallback]` helper. Prints selection to stdout; returns 1 when no branches exist. Both commands now call the helper. Also fixed the same EOF `read` bug in `cmd_pr`'s picker as part of this refactor.
+
+### v13: Fix `wt finish` ff failure when local base is ahead of origin (2026-03-19)
+
+51. **`wt finish` failed when local base was ahead of origin** (S4) — When two worktrees were created from the same dev base (X), the first finish advanced local dev to X→A (not pushed, origin stayed at X). The second finish rebased its branch onto origin/dev (X, a no-op) — but then tried to fast-forward local dev (X→A) to the feature tip (X→B). Since X→A is not an ancestor of X→B, `merge --ff-only` failed. Fixed by inlining the rebase target selection in `cmd_finish`: if local base is strictly ahead of origin, rebase onto local base instead of origin. Also fixed the Strategy 2 error message to show the `merge --ff-only` error rather than the unrelated Strategy 1 (`git fetch .`) error.
+
+52. **`wt sync` also rebased onto stale origin** (S5) — Same root cause as S4: `_rebase_onto_base` always preferred origin, so `wt sync` wouldn't include local-only commits from previous finishes. Extracted the smart target selection (S4's inline logic) into `_rebase_onto_base` behind a `--prefer-local` flag. `cmd_finish` and `cmd_sync` now pass `--prefer-local`; `cmd_pr` does not (PR must target remote state). Also restores `cmd_finish` to calling the helper rather than inlining.
 
 ---
 

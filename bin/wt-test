@@ -1231,6 +1231,120 @@ cd "$REPO"
 git -C "$REPO" worktree remove "$WT_S3A" --force 2>/dev/null || true
 git -C "$REPO" branch -D "wt/s3-holder" 2>/dev/null || true
 
+# ─── S4: wt finish — local base ahead of origin ──────────────────────────────
+
+section "S4: wt finish — succeeds when local base is ahead of origin"
+# Scenario: two worktrees created in parallel from the same dev base (X).
+# First finishes → local dev advances to X→A (not pushed, origin stays at X).
+# Second then finishes: its branch is based on X (old dev), rebasing onto
+# origin/dev (X) is a no-op, but fast-forward from local dev (X→A) fails
+# because A is not in the feature branch's ancestry. Fix: rebase onto local
+# dev when it's ahead, so feature becomes X→A→B' and ff works.
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+
+BARE_S4="${TMPROOT}/bare-s4.git"
+git -C "$REPO" clone --bare . "$BARE_S4" 2>/dev/null
+git -C "$REPO" remote add origin "$BARE_S4" 2>/dev/null \
+  || git -C "$REPO" remote set-url origin "$BARE_S4"
+git -C "$REPO" fetch origin dev 2>/dev/null
+
+# Create BOTH worktrees from the same dev base (parallel workflow)
+WT_S4A="${REPO}/.worktrees/s4-first"
+WT_S4B="${REPO}/.worktrees/s4-second"
+WT_REGISTRY="$registry_file" bash "$WT" new "s4 first"  >/dev/null 2>&1
+WT_REGISTRY="$registry_file" bash "$WT" new "s4 second" >/dev/null 2>&1
+
+echo "s4-first-work" > "${WT_S4A}/s4-first.txt"
+git -C "$WT_S4A" add s4-first.txt
+git -C "$WT_S4A" commit -q -m "s4 first commit"
+
+echo "s4-second-work" > "${WT_S4B}/s4-second.txt"
+git -C "$WT_S4B" add s4-second.txt
+git -C "$WT_S4B" commit -q -m "s4 second commit"
+
+# Finish first — local dev advances to X→A; origin/dev stays at X
+cd "$WT_S4A"
+WT_REGISTRY="$registry_file" bash "$WT" finish --yes >/dev/null 2>&1
+cd "$REPO"
+
+# Precondition: origin/dev doesn't have first commit; local dev does
+origin_log_s4=$(git -C "$REPO" log origin/dev --oneline 2>/dev/null || true)
+assert_not_contains "S4 precondition: origin/dev lacks first commit" \
+  "s4 first commit" "$origin_log_s4"
+
+# Now finish second — branch is still based on X (not X→A), so after rebasing
+# onto origin/dev (X) the feature tip is X→B; local dev is X→A; X→A is NOT
+# an ancestor of X→B → ff fails without the fix
+cd "$WT_S4B"
+_tmp_s4=$(mktemp)
+stdout_s4b=$(WT_REGISTRY="$registry_file" bash "$WT" finish --yes 2>"$_tmp_s4") || true
+out_s4b=$(cat "$_tmp_s4"); rm -f "$_tmp_s4"
+
+assert_contains "S4 second finish succeeds despite local base ahead of origin" "Done!" "$out_s4b"
+assert_dir_not_exists "S4 second worktree removed" "$WT_S4B"
+branch_s4b=$(git -C "$REPO" rev-parse --verify "wt/s4-second" 2>/dev/null || echo "gone")
+assert_eq "S4 second branch deleted" "gone" "$branch_s4b"
+cd "$REPO"
+dev_log_s4=$(git -C "$REPO" log --oneline -5)
+assert_contains "S4 first commit landed on dev"  "s4 first commit"  "$dev_log_s4"
+assert_contains "S4 second commit landed on dev" "s4 second commit" "$dev_log_s4"
+
+# Cleanup
+git -C "$REPO" remote remove origin 2>/dev/null || true
+rm -rf "$BARE_S4"
+
+# ─── S5: wt sync — local base ahead of origin ────────────────────────────────
+
+section "S5: wt sync — rebases onto local base when ahead of origin"
+# Same parallel setup: two worktrees from X. First finishes (local dev → X→A,
+# origin stays at X). wt sync on second should rebase onto local dev (X→A),
+# not stale origin/dev (X), so the synced branch includes A.
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+
+BARE_S5="${TMPROOT}/bare-s5.git"
+git -C "$REPO" clone --bare . "$BARE_S5" 2>/dev/null
+git -C "$REPO" remote add origin "$BARE_S5" 2>/dev/null \
+  || git -C "$REPO" remote set-url origin "$BARE_S5"
+git -C "$REPO" fetch origin dev 2>/dev/null
+
+WT_S5A="${REPO}/.worktrees/s5-first"
+WT_S5B="${REPO}/.worktrees/s5-second"
+WT_REGISTRY="$registry_file" bash "$WT" new "s5 first"  >/dev/null 2>&1
+WT_REGISTRY="$registry_file" bash "$WT" new "s5 second" >/dev/null 2>&1
+
+echo "s5-first-work" > "${WT_S5A}/s5-first.txt"
+git -C "$WT_S5A" add s5-first.txt
+git -C "$WT_S5A" commit -q -m "s5 first commit"
+
+echo "s5-second-work" > "${WT_S5B}/s5-second.txt"
+git -C "$WT_S5B" add s5-second.txt
+git -C "$WT_S5B" commit -q -m "s5 second commit"
+
+# Finish first — local dev advances to X→A; origin/dev stays at X
+cd "$WT_S5A"
+WT_REGISTRY="$registry_file" bash "$WT" finish --yes >/dev/null 2>&1
+cd "$REPO"
+
+# Sync second — should rebase onto local dev (X→A), not origin/dev (X)
+cd "$WT_S5B"
+_tmp_s5=$(mktemp)
+WT_REGISTRY="$registry_file" bash "$WT" sync 2>"$_tmp_s5" || true
+out_s5=$(cat "$_tmp_s5"); rm -f "$_tmp_s5"
+
+assert_contains "S5 sync succeeds" "Synced" "$out_s5"
+# The synced branch must include s5 first commit (from local dev) in its log
+branch_log_s5=$(git -C "$WT_S5B" log --oneline 2>/dev/null || true)
+assert_contains "S5 synced branch includes first commit" "s5 first commit" "$branch_log_s5"
+
+# Cleanup
+cd "$REPO"
+git -C "$REPO" worktree remove "$WT_S5B" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/s5-second" 2>/dev/null || true
+git -C "$REPO" remote remove origin 2>/dev/null || true
+rm -rf "$BARE_S5"
+
 # ─── M1: slugify strips leading hyphens ──────────────────────────────────────
 
 section "M1: slugify — leading hyphens stripped from slug"

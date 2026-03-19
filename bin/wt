@@ -466,13 +466,26 @@ cmd_retarget() {
 # Prints progress to stderr. Does NOT handle conflicts — caller must.
 # Returns: git rebase exit code (non-zero on conflict).
 _rebase_onto_base() {
-  local base_branch="$1" branch="$2"
+  local base_branch="$1" branch="$2" prefer_local="${3:-}"
   info "Fetching origin/${base_branch}..."
   git fetch origin "${base_branch}" >&2 2>/dev/null \
     || warn "Could not fetch origin/${base_branch} — will rebase onto local ref"
-  local rebase_target="origin/${base_branch}"
-  if ! git rev-parse --verify "${rebase_target}" &>/dev/null; then
-    rebase_target="${base_branch}"
+  local rebase_target="${base_branch}"
+  if git rev-parse --verify "origin/${base_branch}" &>/dev/null; then
+    if [[ "$prefer_local" == "--prefer-local" ]]; then
+      # Use whichever ref is further ahead so the ff target (local base) is
+      # always an ancestor of the rebase target.
+      if git merge-base --is-ancestor "${base_branch}" "origin/${base_branch}" 2>/dev/null; then
+        rebase_target="origin/${base_branch}"   # origin ahead or equal
+      elif ! git merge-base --is-ancestor "origin/${base_branch}" "${base_branch}" 2>/dev/null; then
+        rebase_target="origin/${base_branch}"   # diverged — use origin, warn
+        warn "Local ${base_branch} has diverged from origin/${base_branch} — rebasing onto origin."
+      fi
+      # else: local strictly ahead — keep rebase_target as local base_branch
+    else
+      rebase_target="origin/${base_branch}"     # default: always prefer origin
+    fi
+  else
     warn "No remote-tracking branch — using local ${base_branch}"
   fi
   info "Rebasing ${branch} onto ${rebase_target}..."
@@ -621,7 +634,7 @@ cmd_finish() {
       || { info "Aborted."; exit 0; }
   fi
 
-  if ! _rebase_onto_base "$base_branch" "$branch"; then
+  if ! _rebase_onto_base "$base_branch" "$branch" --prefer-local; then
     git rebase --abort 2>/dev/null || true
     warn "Rebase conflict. Aborted."
     echo -e "  Run 'wt sync' to rebase and resolve conflicts first, then retry 'wt finish'." >&2
@@ -651,10 +664,11 @@ cmd_finish() {
     done < <(git worktree list --porcelain 2>/dev/null)
 
     if [[ -n "$ff_wt" ]]; then
-      if git -C "$ff_wt" merge --ff-only "$branch" >&2; then
+      local merge_err
+      if merge_err=$(git -C "$ff_wt" merge --ff-only "$branch" 2>&1); then
         success "Fast-forward successful (from worktree: $(basename "$ff_wt"))"
       else
-        warn "Fast-forward failed: ${ff_err}"
+        warn "Fast-forward failed: ${merge_err}"
         echo -e "Resolve manually:" >&2
         echo -e "  cd ${ff_wt} && git merge --ff-only ${branch}" >&2
         echo -e "  # then: git worktree remove ${repo_root} && git branch -D ${branch}" >&2
@@ -704,7 +718,7 @@ cmd_sync() {
   [[ -n "$(git status --porcelain)" ]] \
     && error "Uncommitted changes present. Commit or stash before 'wt sync'."
 
-  if ! _rebase_onto_base "$base_branch" "$branch"; then
+  if ! _rebase_onto_base "$base_branch" "$branch" --prefer-local; then
     warn "Rebase paused — conflicts detected."
     echo -e "  Fix conflicts, then:  git add <files> && git rebase --continue" >&2
     echo -e "  To abort:             git rebase --abort" >&2
