@@ -49,6 +49,21 @@ Plain `key=value` file in each worktree root. Seven fields: `base_branch`, `crea
 - Color detection checks stdout (`-t 1`), not stderr, because `wt list` pipes through stdout
 - `fd 5` trick in `cmd_doctor` keeps stdin free for `confirm()` during inner loops
 
+## wt update — Claude Code integration
+
+`wt update` is the **one exception** to the "never run `wt` commands via Bash tool" rule. It is safe for Claude Code to invoke autonomously.
+
+`wt update` merges the local base branch into the current worktree branch. When conflicts occur:
+
+1. Read every conflicted file (they contain `<<<<<<<`/`=======`/`>>>>>>>` markers)
+2. For each conflict, analyse both sides — understand what each change is trying to do
+3. **If the correct resolution is clear** (e.g. one side adds something new, the other makes an unrelated change): resolve it and explain what you did
+4. **If the resolution requires product/business knowledge** (e.g. both sides rewrote the same logic differently): explain both sides to the user and ask how to resolve before editing
+5. After resolving all conflicts in a file: `git add <file>`
+6. Once all files are resolved: `git merge --continue`
+
+To abort at any point: `git merge --abort`
+
 ## TDD (Test-Driven Development)
 
 Always use the **superpowers:test-driven-development** skill when implementing any feature or bugfix. Write tests first, then implement.

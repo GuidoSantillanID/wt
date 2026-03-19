@@ -10,6 +10,7 @@ Works great standalone. Works *especially* well with **Claude Code + tmux** — 
 wt new "add dark mode toggle"     # create worktree + branch, cd into it
 wt finish                         # rebase + fast-forward + clean up
 wt sync                           # rebase onto latest base (keep it current)
+wt update                         # merge local base into worktree (LLM conflict resolution)
 wt retarget [branch]              # change which branch this worktree targets
 wt abandon                        # abandon without merging
 wt pr                             # push branch + open GitHub PR
@@ -85,6 +86,9 @@ wt finish
 # Keep a long-lived worktree current with the base branch
 wt sync
 
+# Merge local base into worktree branch (for LLM-assisted conflict resolution)
+wt update
+
 # Change which branch this worktree will merge into
 wt retarget main           # switch to main
 wt retarget                # interactive picker
@@ -111,7 +115,7 @@ wt doctor
 - Branch names: `wt/<slug>` (auto-generated from your description)
 - A `.wt-meta` file in each worktree stores metadata (base branch, description, timestamps)
 - `.worktrees/` and `.wt-meta` are excluded from git via `.git/info/exclude` (never committed)
-- `wt finish` rebases the worktree branch onto its base, fast-forwards the base, and removes the worktree and branch — leaving a linear history
+- `wt finish` integrates the worktree branch into its base (rebase or squash, auto-detected), fast-forwards the base, and removes the worktree and branch
 - `wt abandon` removes the worktree and branch without merging
 
 ## Commands reference
@@ -128,11 +132,15 @@ Creates a new git worktree with an auto-named branch.
 
 ### `wt finish [--yes|-y] [--force]`
 
-Integrates the worktree back into its base branch. Always produces a linear history — no merge commits.
+Integrates the worktree back into its base branch and cleans up.
 
 Pass `--yes` or `-y` to skip all confirmation prompts (useful when running from scripts or Claude Code).
 
 Pass `--force` to bypass the PR-open guard and finish locally even when a GitHub PR is still open.
+
+**Strategy (auto-detected):**
+- **No merge commits** (clean history): rebases onto base and fast-forwards → linear history
+- **Merge commits present** (from `wt update`): squash-merges into base → single commit on base, avoids re-encountering conflicts
 
 **Safety checks (in order):**
 1. Verifies you're in a worktree (not the main checkout) — errors if not
@@ -141,15 +149,15 @@ Pass `--force` to bypass the PR-open guard and finish locally even when a GitHub
 4. Warns if an editor is still running in this worktree's tmux session (requires `claude_running_in_session()` override; no-op by default) — skipped by `--yes`
 5. If `gh` is installed: checks for a GitHub PR on the current branch
    - **PR merged**: confirms cleanup (skipped with `--yes`), removes worktree + branch without rebasing, returns
-   - **PR open**: errors unless `--force` is passed; with `--force`, proceeds to local rebase flow
-   - **No PR / gh unavailable**: continues with local rebase flow below
-6. Confirms: `Rebase wt/<slug> onto <base> and fast-forward? [y/N]` — skipped by `--yes`
-7. Fetches remote base branch (best-effort, ignores failure)
-8. Rebases worktree branch onto base — aborts and prints manual instructions if there are conflicts
-9. Fast-forwards base branch to the rebased tip (checks all worktrees, not just main)
-10. Removes worktree directory and branch
-11. Kills tmux session `<project>/<slug>` if it exists (switches to project main session first if you're running from inside it)
-12. `cd`s back to main checkout (via shell wrapper)
+   - **PR open**: errors unless `--force` is passed; with `--force`, proceeds to local integration flow
+   - **No PR / gh unavailable**: continues with local integration flow below
+6. Detects strategy (rebase vs squash) based on merge commits in `<base>..HEAD`
+   - **Squash path**: confirms `Squash-merge wt/<slug> into <base>?` — skipped by `--yes`. Requires base to be an ancestor of HEAD (i.e. `wt update` was run). If base has new commits since the last `wt update`, errors with a prompt to run `wt update` again.
+   - **Rebase path**: confirms `Rebase wt/<slug> onto <base> and fast-forward?` — skipped by `--yes`. Fetches remote base (best-effort). Rebases — aborts if there are conflicts.
+7. Fast-forwards base branch to the integrated tip (checks all worktrees, not just main)
+8. Removes worktree directory and branch
+9. Kills tmux session `<project>/<slug>` if it exists (switches to project main session first if you're running from inside it)
+10. `cd`s back to main checkout (via shell wrapper)
 
 
 ### `wt sync`
@@ -164,6 +172,30 @@ Rebases the current worktree branch onto the latest base branch from origin. Kee
 5. Prints success — worktree stays intact, no cleanup
 
 Unlike `wt finish`, sync does not merge into the base, remove the worktree, or change your working directory.
+
+### `wt update`
+
+Merges the **local** base branch into the current worktree branch, creating a merge commit. Designed for LLM-assisted conflict resolution (e.g. Claude Code) — when conflicts occur, the LLM analyses each conflict, resolves clear cases autonomously, and asks the user for guidance when the correct resolution requires product or business knowledge.
+
+**Steps:**
+1. Verifies you're in a worktree — errors if not
+2. Errors if a merge or rebase is already in progress
+3. Aborts if there are uncommitted tracked changes (untracked files are allowed)
+4. Errors if the base branch ref doesn't exist locally
+5. If already up to date (base is an ancestor of HEAD), exits with success
+6. Runs `git merge <base_branch>` — exits on success
+7. On conflict: lists conflicted files and resolution instructions, exits 1
+
+**When conflicts occur (LLM flow):**
+1. Read each conflicted file — both sides of every `<<<<<<<`/`=======`/`>>>>>>>` marker
+2. If the resolution is clear: resolve and explain what was done
+3. If the resolution requires product/business knowledge: explain both sides and ask the user
+4. `git add <resolved-files>`, then `git merge --continue`
+5. To abort: `git merge --abort`
+
+**`wt sync` vs `wt update`:**
+- `wt sync` — rebases (linear history), fetches from origin, for human use
+- `wt update` — merges (merge commit), uses local base only, designed for LLM use
 
 ### `wt retarget [branch]`
 
@@ -207,7 +239,7 @@ Pushes the worktree branch and opens a GitHub PR. Requires the [GitHub CLI](http
 1. Verifies you're in a worktree — errors if not
 2. Aborts if there are uncommitted changes
 3. Prompts to confirm or change the base branch (skipped with `--yes`). If changed, updates `.wt-meta` so future `wt pr`/`wt sync`/`wt finish` use the new base.
-4. Fetches and rebases onto `origin/<base_branch>` (same as `wt sync`) — pauses on conflicts
+4. If no merge commits in `<base>..HEAD`: fetches and rebases onto `origin/<base_branch>` (same as `wt sync`) — pauses on conflicts. If merge commits are present (from `wt update`): skips rebase to avoid re-encountering resolved conflicts.
 5. Pushes to origin with `--force-with-lease` (needed after rebase rewrites history)
 6. If a PR already exists for this branch, prints the URL and returns
 7. Auto-generates the PR body from commits on the branch (`git log --oneline` as a bullet list)
@@ -307,12 +339,17 @@ wt finish   # rebases onto base, fast-forwards, cleans up
 
 ### Recovering from a conflict in `wt finish`
 
-If `wt finish` aborts due to a rebase conflict:
+If `wt finish` aborts due to a rebase conflict, you have two options:
 
 ```bash
-# You're still in the worktree
+# Option 1: resolve via rebase (linear history)
 git rebase <base-branch>   # resolve conflicts (git add + git rebase --continue)
-wt finish                  # retry — rebase already done, fast-forward proceeds cleanly
+wt finish                  # retry
+
+# Option 2: use wt update instead (merge, LLM-friendly)
+git rebase --abort
+wt update                  # merge base into worktree (Claude resolves conflicts)
+wt finish                  # squash path auto-detected — no rebase, no re-conflict
 ```
 
 ### Keeping worktrees visible in tmux

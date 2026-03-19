@@ -1521,6 +1521,329 @@ cd "$S4_PROJ"
 git -C "$S4_PROJ" worktree remove "$S4_WT" --force 2>/dev/null || true
 git -C "$S4_PROJ" branch -D "wt/s4-test" 2>/dev/null || true
 
+# ─── wt update ───────────────────────────────────────────────────────────────
+
+UPD_PROJ="${TMPROOT}/update-proj"
+mkdir -p "$UPD_PROJ"
+git -C "$UPD_PROJ" init -q -b main
+git -C "$UPD_PROJ" config user.email "test@test.com"
+git -C "$UPD_PROJ" config user.name "Test"
+echo "init" > "$UPD_PROJ/README.md"
+git -C "$UPD_PROJ" add README.md
+git -C "$UPD_PROJ" commit -q -m "initial"
+git -C "$UPD_PROJ" checkout -q -b dev
+echo "dev-content" > "$UPD_PROJ/dev.txt"
+git -C "$UPD_PROJ" add dev.txt
+git -C "$UPD_PROJ" commit -q -m "dev commit"
+git -C "$UPD_PROJ" checkout -q main
+
+section "wt update — error from main checkout"
+cd "$UPD_PROJ"
+out_upd_main=$(wt update 2>&1 || true)
+assert_contains "errors when not in a worktree" "main checkout" "$out_upd_main"
+
+section "wt update — already up to date"
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" checkout -q dev
+UPD_WT_UTD="${UPD_PROJ}/.worktrees/upd-utd"
+wt new "upd utd" 2>/dev/null
+cd "$UPD_WT_UTD"
+out_utd=$(wt update 2>&1)
+assert_contains "already up to date" "Already up to date" "$out_utd"
+stdout_utd=$(wt update 2>/dev/null)
+assert_eq "no stdout when up to date" "" "$stdout_utd"
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" worktree remove "$UPD_WT_UTD" --force 2>/dev/null || true
+git -C "$UPD_PROJ" branch -D "wt/upd-utd" 2>/dev/null || true
+git -C "$UPD_PROJ" checkout -q main
+
+section "wt update — clean merge from diverged base"
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" checkout -q dev
+UPD_WT_MERGE="${UPD_PROJ}/.worktrees/upd-merge"
+wt new "upd merge" 2>/dev/null
+echo "wt-work" > "${UPD_WT_MERGE}/wt-work.txt"
+git -C "$UPD_WT_MERGE" add wt-work.txt
+git -C "$UPD_WT_MERGE" commit -q -m "worktree work"
+git -C "$UPD_PROJ" checkout -q dev
+echo "base-advance" > "${UPD_PROJ}/base-advance.txt"
+git -C "$UPD_PROJ" add base-advance.txt
+git -C "$UPD_PROJ" commit -q -m "base advanced"
+git -C "$UPD_PROJ" checkout -q main
+cd "$UPD_WT_MERGE"
+out_merge=$(wt update 2>&1)
+assert_contains "reports success" "Merged" "$out_merge"
+assert_contains "base commit reachable" "base advanced" "$(git -C "$UPD_WT_MERGE" log --oneline -5)"
+assert_contains "worktree commit preserved" "worktree work" "$(git -C "$UPD_WT_MERGE" log --oneline -5)"
+assert_contains "merge commit present" "Merge" "$(git -C "$UPD_WT_MERGE" log --oneline -5)"
+stdout_merge=$(wt update 2>/dev/null)
+assert_eq "no stdout from update" "" "$stdout_merge"
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" worktree remove "$UPD_WT_MERGE" --force 2>/dev/null || true
+git -C "$UPD_PROJ" branch -D "wt/upd-merge" 2>/dev/null || true
+git -C "$UPD_PROJ" checkout -q main
+
+section "wt update — blocks on uncommitted tracked changes"
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" checkout -q dev
+UPD_WT_DIRTY="${UPD_PROJ}/.worktrees/upd-dirty"
+wt new "upd dirty" 2>/dev/null
+echo "dirty" >> "${UPD_WT_DIRTY}/README.md"
+cd "$UPD_WT_DIRTY"
+out_dirty=$(wt update 2>&1 || true)
+assert_contains "blocks on uncommitted changes" "Uncommitted changes" "$out_dirty"
+git -C "$UPD_WT_DIRTY" checkout -- README.md
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" worktree remove "$UPD_WT_DIRTY" --force 2>/dev/null || true
+git -C "$UPD_PROJ" branch -D "wt/upd-dirty" 2>/dev/null || true
+git -C "$UPD_PROJ" checkout -q main
+
+section "wt update — untracked files do not block"
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" checkout -q dev
+UPD_WT_UNTRACK="${UPD_PROJ}/.worktrees/upd-untrack"
+wt new "upd untrack" 2>/dev/null
+git -C "$UPD_PROJ" checkout -q dev
+echo "base-new-file" > "${UPD_PROJ}/base-new2.txt"
+git -C "$UPD_PROJ" add base-new2.txt
+git -C "$UPD_PROJ" commit -q -m "base new file"
+git -C "$UPD_PROJ" checkout -q main
+echo "untracked" > "${UPD_WT_UNTRACK}/untracked.txt"
+cd "$UPD_WT_UNTRACK"
+out_untrack=$(wt update 2>&1)
+assert_contains "succeeds with untracked files present" "Merged" "$out_untrack"
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" worktree remove "$UPD_WT_UNTRACK" --force 2>/dev/null || true
+git -C "$UPD_PROJ" branch -D "wt/upd-untrack" 2>/dev/null || true
+git -C "$UPD_PROJ" checkout -q main
+
+section "wt update — conflict detected, files listed"
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" checkout -q dev
+# Add multi-line data.txt to dev for auto-merge test
+printf "line1\nline2\nline3\n" > "${UPD_PROJ}/data.txt"
+git -C "$UPD_PROJ" add data.txt
+git -C "$UPD_PROJ" commit -q -m "add data.txt"
+UPD_WT_CONFLICT="${UPD_PROJ}/.worktrees/upd-conflict"
+wt new "upd conflict" 2>/dev/null
+# Worktree: change README.md (conflict) + append to data.txt (auto-merge)
+echo "worktree-change" > "${UPD_WT_CONFLICT}/README.md"
+printf "line1\nline2\nline3\nwt-appended\n" > "${UPD_WT_CONFLICT}/data.txt"
+git -C "$UPD_WT_CONFLICT" add README.md data.txt
+git -C "$UPD_WT_CONFLICT" commit -q -m "wt changed readme"
+# Base: change README.md (conflict) + prepend to data.txt (auto-merge)
+git -C "$UPD_PROJ" checkout -q dev
+echo "base-change" > "${UPD_PROJ}/README.md"
+printf "base-prepended\nline1\nline2\nline3\n" > "${UPD_PROJ}/data.txt"
+git -C "$UPD_PROJ" add README.md data.txt
+git -C "$UPD_PROJ" commit -q -m "base changed readme"
+git -C "$UPD_PROJ" checkout -q main
+cd "$UPD_WT_CONFLICT"
+out_conflict=$(wt update 2>&1 || true)
+assert_contains "reports conflict" "conflict" "$out_conflict"
+assert_contains "lists conflicted file" "README.md" "$out_conflict"
+assert_contains "shows conflict line number" "README.md:1" "$out_conflict"
+assert_contains "shows conflict count" "1 conflict" "$out_conflict"
+assert_contains "shows auto-merged summary" "Auto-merged:" "$out_conflict"
+assert_contains "lists auto-merged file" "data.txt" "$out_conflict"
+assert_contains "shows HEAD commit subject" "wt changed readme" "$out_conflict"
+assert_contains "shows base commit subject" "base changed readme" "$out_conflict"
+assert_contains "shows merge continue instruction" "git merge --continue" "$out_conflict"
+git -C "$UPD_WT_CONFLICT" merge --abort 2>/dev/null || true
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" worktree remove "$UPD_WT_CONFLICT" --force 2>/dev/null || true
+git -C "$UPD_PROJ" branch -D "wt/upd-conflict" 2>/dev/null || true
+git -C "$UPD_PROJ" checkout -q main
+
+section "wt update — errors when base branch not found locally"
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" checkout -q -b temp-base
+echo "temp" > "${UPD_PROJ}/temp.txt"
+git -C "$UPD_PROJ" add temp.txt
+git -C "$UPD_PROJ" commit -q -m "temp base commit"
+UPD_WT_NOREF="${UPD_PROJ}/.worktrees/upd-noref"
+wt new "upd noref" 2>/dev/null
+git -C "$UPD_PROJ" checkout -q main
+git -C "$UPD_PROJ" branch -D temp-base
+cd "$UPD_WT_NOREF"
+out_noref=$(wt update 2>&1 || true)
+assert_contains "errors on missing local base branch" "not found locally" "$out_noref"
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" worktree remove "$UPD_WT_NOREF" --force 2>/dev/null || true
+git -C "$UPD_PROJ" branch -D "wt/upd-noref" 2>/dev/null || true
+
+section "wt update — blocks when merge already in progress"
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" checkout -q dev
+UPD_WT_INPROG="${UPD_PROJ}/.worktrees/upd-inprog"
+wt new "upd inprog" 2>/dev/null
+echo "wt-readme" > "${UPD_WT_INPROG}/README.md"
+git -C "$UPD_WT_INPROG" add README.md
+git -C "$UPD_WT_INPROG" commit -q -m "wt readme"
+git -C "$UPD_PROJ" checkout -q dev
+echo "dev-readme" > "${UPD_PROJ}/README.md"
+git -C "$UPD_PROJ" add README.md
+git -C "$UPD_PROJ" commit -q -m "dev readme"
+git -C "$UPD_PROJ" checkout -q main
+cd "$UPD_WT_INPROG"
+git merge dev 2>/dev/null || true
+out_inprog=$(wt update 2>&1 || true)
+assert_contains "blocks on in-progress merge" "already in progress" "$out_inprog"
+git -C "$UPD_WT_INPROG" merge --abort 2>/dev/null || true
+cd "$UPD_PROJ"
+git -C "$UPD_PROJ" worktree remove "$UPD_WT_INPROG" --force 2>/dev/null || true
+git -C "$UPD_PROJ" branch -D "wt/upd-inprog" 2>/dev/null || true
+git -C "$UPD_PROJ" checkout -q main
+
+# ─── finish/pr — squash path after wt update ─────────────────────────────────
+# Isolated project so state doesn't pollute main REPO tests.
+SQ_PROJ="${TMPROOT}/sq-proj"
+mkdir -p "$SQ_PROJ"
+git -C "$SQ_PROJ" init -q -b main
+git -C "$SQ_PROJ" config user.email "test@test.com"
+git -C "$SQ_PROJ" config user.name "Test"
+echo "init" > "$SQ_PROJ/README.md"
+git -C "$SQ_PROJ" add README.md
+git -C "$SQ_PROJ" commit -q -m "initial"
+git -C "$SQ_PROJ" checkout -q -b dev
+echo "dev-content" > "$SQ_PROJ/dev.txt"
+git -C "$SQ_PROJ" add dev.txt
+git -C "$SQ_PROJ" commit -q -m "dev commit"
+git -C "$SQ_PROJ" checkout -q main
+
+section "wt finish — squash merge after wt update"
+cd "$SQ_PROJ"
+git -C "$SQ_PROJ" checkout -q dev
+SQ_WT="${SQ_PROJ}/.worktrees/sq-test-task"
+wt new "sq test task" 2>/dev/null
+# Commit in worktree
+echo "wt-work" > "${SQ_WT}/wt-work.txt"
+git -C "$SQ_WT" add wt-work.txt
+git -C "$SQ_WT" commit -q -m "worktree work"
+# Advance dev (different file — no conflict)
+git -C "$SQ_PROJ" checkout -q dev
+echo "base-advance" > "${SQ_PROJ}/base-advance.txt"
+git -C "$SQ_PROJ" add base-advance.txt
+git -C "$SQ_PROJ" commit -q -m "base advanced"
+git -C "$SQ_PROJ" checkout -q main  # leave dev free for ff
+dev_sq_before=$(git -C "$SQ_PROJ" rev-parse dev)
+# wt update → merge commit
+cd "$SQ_WT"
+wt update 2>/dev/null
+merge_check=$(git -C "$SQ_WT" rev-list --merges "dev..HEAD" | head -1)
+[[ -n "$merge_check" ]] \
+  && pass "sanity: merge commit present after wt update" \
+  || fail "sanity: no merge commit found after wt update"
+# wt finish --yes → squash path
+_tmp_sq=$(mktemp)
+stdout_sq=$(wt finish --yes 2>"$_tmp_sq")
+out_sq=$(cat "$_tmp_sq"); rm -f "$_tmp_sq"
+assert_contains       "squash finish reports Done"           "Done!"        "$out_sq"
+assert_contains       "squash finish uses squash strategy"   "squash"       "$out_sq"
+assert_dir_not_exists "sq worktree removed"                  "$SQ_WT"
+branch_sq=$(git -C "$SQ_PROJ" rev-parse --verify "wt/sq-test-task" 2>/dev/null || echo "gone")
+assert_eq             "sq branch deleted"                    "gone"         "$branch_sq"
+# Exactly 1 new commit on dev (the squash — not 2 separate commits)
+sq_new_count=$(git -C "$SQ_PROJ" rev-list "${dev_sq_before}..dev" | wc -l | tr -d ' ')
+assert_eq             "exactly 1 squash commit on dev"       "1"            "$sq_new_count"
+# Squash commit message matches description
+sq_msg=$(git -C "$SQ_PROJ" log -1 --format="%s" dev)
+assert_eq             "squash commit message is description" "sq test task" "$sq_msg"
+# Worktree files landed on dev
+git -C "$SQ_PROJ" checkout -q dev
+assert_file_exists    "wt-work.txt landed on dev"            "${SQ_PROJ}/wt-work.txt"
+assert_file_exists    "base-advance.txt landed on dev"       "${SQ_PROJ}/base-advance.txt"
+git -C "$SQ_PROJ" checkout -q main
+
+section "wt finish — squash pre-flight error when base advanced after update"
+cd "$SQ_PROJ"
+git -C "$SQ_PROJ" checkout -q dev
+SQ_PRE_WT="${SQ_PROJ}/.worktrees/sq-preflight-test"
+wt new "sq preflight test" 2>/dev/null
+echo "wt-pf-work" > "${SQ_PRE_WT}/wt-pf-work.txt"
+git -C "$SQ_PRE_WT" add wt-pf-work.txt
+git -C "$SQ_PRE_WT" commit -q -m "preflight work"
+# Advance dev (diverge)
+git -C "$SQ_PROJ" checkout -q dev
+echo "base-pf1" > "${SQ_PROJ}/base-pf1.txt"
+git -C "$SQ_PROJ" add base-pf1.txt
+git -C "$SQ_PROJ" commit -q -m "base pf advance 1"
+git -C "$SQ_PROJ" checkout -q main
+# wt update → merge (base is now ancestor of HEAD)
+cd "$SQ_PRE_WT"
+wt update 2>/dev/null
+# Advance dev AGAIN after update → base is no longer ancestor of HEAD
+git -C "$SQ_PROJ" checkout -q dev
+echo "base-pf2" > "${SQ_PROJ}/base-pf2.txt"
+git -C "$SQ_PROJ" add base-pf2.txt
+git -C "$SQ_PROJ" commit -q -m "base pf advance 2"
+git -C "$SQ_PROJ" checkout -q main
+# wt finish --yes → squash path detected (merge commits exist), pre-flight fails
+cd "$SQ_PRE_WT"
+_tmp_sq_pre=$(mktemp)
+wt finish --yes 2>"$_tmp_sq_pre" || true
+out_sq_pre=$(cat "$_tmp_sq_pre"); rm -f "$_tmp_sq_pre"
+assert_contains   "squash pre-flight shows wt update instruction" "wt update" "$out_sq_pre"
+assert_dir_exists "sq preflight worktree preserved on error"       "$SQ_PRE_WT"
+# Cleanup
+cd "$SQ_PROJ"
+git -C "$SQ_PROJ" worktree remove "$SQ_PRE_WT" --force 2>/dev/null || true
+git -C "$SQ_PROJ" branch -D "wt/sq-preflight-test" 2>/dev/null || true
+
+section "wt pr — skips rebase when merge commits present"
+SQ_PR_PROJ="${TMPROOT}/sq-pr-proj"
+mkdir -p "$SQ_PR_PROJ"
+git -C "$SQ_PR_PROJ" init -q -b main
+git -C "$SQ_PR_PROJ" config user.email "test@test.com"
+git -C "$SQ_PR_PROJ" config user.name "Test"
+echo "init" > "$SQ_PR_PROJ/README.md"
+git -C "$SQ_PR_PROJ" add README.md
+git -C "$SQ_PR_PROJ" commit -q -m "initial"
+git -C "$SQ_PR_PROJ" checkout -q -b dev
+echo "dev-content" > "$SQ_PR_PROJ/dev.txt"
+git -C "$SQ_PR_PROJ" add dev.txt
+git -C "$SQ_PR_PROJ" commit -q -m "dev commit"
+git -C "$SQ_PR_PROJ" checkout -q dev
+SQ_PR_BARE="${TMPROOT}/sq-pr-bare.git"
+git -C "$SQ_PR_PROJ" clone --bare . "$SQ_PR_BARE" 2>/dev/null
+SQ_PR_WT="${SQ_PR_PROJ}/.worktrees/sq-pr-test"
+cd "$SQ_PR_PROJ"
+wt new "sq pr test" 2>/dev/null
+git -C "$SQ_PR_WT" remote add origin "$SQ_PR_BARE"
+echo "pr-work" > "${SQ_PR_WT}/pr-work.txt"
+git -C "$SQ_PR_WT" add pr-work.txt
+git -C "$SQ_PR_WT" commit -q -m "pr work commit"
+# Advance dev (diverge)
+git -C "$SQ_PR_PROJ" checkout -q dev
+echo "dev-advance" > "${SQ_PR_PROJ}/dev-advance.txt"
+git -C "$SQ_PR_PROJ" add dev-advance.txt
+git -C "$SQ_PR_PROJ" commit -q -m "dev advanced"
+git -C "$SQ_PR_PROJ" checkout -q main
+# wt update → merge commit
+cd "$SQ_PR_WT"
+wt update 2>/dev/null
+# Mock gh
+SQ_PR_MOCK="${TMPROOT}/sq-pr-mock"
+mkdir -p "$SQ_PR_MOCK"
+cat > "${SQ_PR_MOCK}/gh" << 'SQ_PR_MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "pr" && "$2" == "view" ]]; then exit 1; fi
+if [[ "$1" == "pr" && "$2" == "create" ]]; then echo "https://github.com/test/test/pull/99"; fi
+SQ_PR_MOCKEOF
+chmod +x "${SQ_PR_MOCK}/gh"
+cd "$SQ_PR_WT"
+_tmp_sq_pr=$(mktemp)
+stdout_sq_pr=$(PATH="${SQ_PR_MOCK}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" pr --yes 2>"$_tmp_sq_pr")
+out_sq_pr=$(cat "$_tmp_sq_pr"); rm -f "$_tmp_sq_pr"
+assert_not_contains "pr skips rebase with merge commits"  "Rebased"            "$out_sq_pr"
+assert_contains     "pr still creates PR"                 "PR created"         "$out_sq_pr"
+assert_contains     "pr returns URL on stdout"            "https://github.com" "$stdout_sq_pr"
+# Cleanup
+cd "$SQ_PR_PROJ"
+git -C "$SQ_PR_PROJ" worktree remove "$SQ_PR_WT" --force 2>/dev/null || true
+git -C "$SQ_PR_PROJ" branch -D "wt/sq-pr-test" 2>/dev/null || true
+rm -rf "$SQ_PR_MOCK" "$SQ_PR_BARE"
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 echo ""

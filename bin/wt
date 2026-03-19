@@ -8,8 +8,9 @@
 #
 # COMMANDS
 #   wt new [--with-deps] "<description>"   Create a worktree with auto-named branch
-#   wt finish [--yes|-y] [--force]         Rebase + fast-forward into base, clean up
+#   wt finish [--yes|-y] [--force]         Integrate worktree into base (rebase or squash), clean up
 #   wt sync                                Rebase onto latest base branch (from origin)
+#   wt update                              Merge local base branch into worktree (LLM-friendly)
 #   wt retarget [branch]                   Change this worktree's base branch
 #   wt abandon [--yes|-y]                  Abandon worktree without merging, clean up
 #   wt pr [--draft] [--yes|-y]             Push branch and open a GitHub PR (requires gh)
@@ -51,7 +52,7 @@
 #   - Worktrees live at <project>/.worktrees/<slug>/
 #   - Branch name: wt/<slug> (auto-generated from description)
 #   - .wt-meta stores key=value pairs (no quoting, read with cut -d= -f2-)
-#   - `wt finish` reads .wt-meta, safety-checks, rebases onto base, fast-forwards, removes worktree+branch
+#   - `wt finish` reads .wt-meta, safety-checks, integrates into base (rebase or squash), removes worktree+branch
 #   - `wt abandon` abandons the worktree without merging
 #
 # =============================================================================
@@ -199,8 +200,9 @@ wt — Git Worktree Lifecycle Tool
 
 USAGE
   wt new [--with-deps] "<description>"   Create a worktree with auto-named branch
-  wt finish [--yes|-y] [--force]         Rebase onto base, fast-forward, clean up
+  wt finish [--yes|-y] [--force]         Integrate worktree into base (rebase or squash), clean up
   wt sync                                Rebase onto latest base branch (from origin)
+  wt update                              Merge local base branch into worktree (LLM-friendly)
   wt retarget [branch]                   Change this worktree's base branch
   wt abandon [--yes|-y]                  Abandon worktree without merging, clean up
   wt pr [--draft] [--yes|-y]             Push branch and open a GitHub PR (requires gh)
@@ -216,11 +218,14 @@ EXAMPLES
   # Copy node_modules from main checkout (zero-cost on APFS/btrfs):
   wt new --with-deps "quick fix for header"
 
-  # Rebase onto base and clean up (run from inside a worktree):
+  # Integrate worktree into base and clean up (run from inside a worktree):
   wt finish
 
   # Rebase worktree onto latest base (run from inside a worktree):
   wt sync
+
+  # Merge local base into worktree (for LLM conflict resolution):
+  wt update
 
   # Abandon a dead-end worktree without merging:
   wt abandon
@@ -245,11 +250,13 @@ NOTES
   • After `wt finish`, your shell cd's back to the main worktree
   • Pass --yes / -y to wt finish, wt abandon, or wt pr to skip confirmation prompts
   • Pass --force to wt finish to proceed even when a PR is still open on GitHub
-  • Use `wt sync` to keep long-lived worktrees current with the base branch
+  • Use `wt sync` to rebase long-lived worktrees onto the latest base branch
+  • Use `wt update` when conflicts exist — LLM analyses each conflict, resolves clear cases autonomously, asks you for guidance when the resolution requires product or business knowledge
   • `wt pr` requires the GitHub CLI (gh) — https://cli.github.com
-  • `wt pr` rebases before pushing (same as wt sync); worktree stays alive after
+  • `wt pr` rebases before pushing when the branch is clean; skips rebase when merge commits are present (from wt update); worktree stays alive after
   • After merging the PR on GitHub, run `wt finish` to clean up the worktree
-  • `wt finish` detects a merged PR (via gh) and skips local rebase/fast-forward
+  • `wt finish` detects a merged PR (via gh) and skips local integration
+  • `wt finish` auto-detects merge commits from `wt update` and uses squash instead of rebase
   • Projects are tracked in ${XDG_CONFIG_HOME:-~/.config}/wt/projects (one path per line)
   • Override registry path: export WT_REGISTRY=/path/to/registry
 HELP
@@ -492,6 +499,58 @@ _rebase_onto_base() {
   git rebase "${rebase_target}" >&2
 }
 
+# Fast-forward base_branch to ff_ref using two strategies.
+# Strategy 1: local fetch (works when base_branch is not checked out in current worktree)
+# Strategy 2: find a worktree with base_branch checked out, merge --ff-only there
+# Args: <ff_ref> <base_branch> <repo_root> <branch>
+#   ff_ref      — commit/ref to advance base_branch to (resolved to SHA for portability)
+#   base_branch — branch to fast-forward
+#   repo_root   — current worktree root (skipped in worktree scan)
+#   branch      — feature branch name (used in manual-fix instructions)
+_ff_onto_base() {
+  local ff_ref="$1" base_branch="$2" repo_root="$3" branch="$4"
+  local ff_sha
+  ff_sha=$(git rev-parse "${ff_ref}^{commit}")
+  # Strategy 1: from within this worktree (works when base_branch is NOT checked out here)
+  local ff_err
+  if ff_err=$(git fetch . "${ff_sha}:refs/heads/${base_branch}" 2>&1); then
+    success "Fast-forward successful"
+  else
+    # Strategy 2: find any worktree that has base_branch checked out
+    local ff_wt=""
+    while IFS= read -r porcelain_line; do
+      if [[ "$porcelain_line" == worktree\ * ]]; then
+        local wt_cand="${porcelain_line#worktree }"
+        [[ "$wt_cand" == "$repo_root" ]] && continue
+        local wt_cand_branch
+        wt_cand_branch=$(git -C "$wt_cand" symbolic-ref --short HEAD 2>/dev/null || echo "")
+        if [[ "$wt_cand_branch" == "$base_branch" ]]; then
+          ff_wt="$wt_cand"
+          break
+        fi
+      fi
+    done < <(git worktree list --porcelain 2>/dev/null)
+    if [[ -n "$ff_wt" ]]; then
+      local merge_err
+      if merge_err=$(git -C "$ff_wt" merge --ff-only "$ff_sha" 2>&1); then
+        success "Fast-forward successful (from worktree: $(basename "$ff_wt"))"
+      else
+        warn "Fast-forward failed: ${merge_err}"
+        echo -e "Resolve manually:" >&2
+        echo -e "  cd ${ff_wt} && git merge --ff-only ${ff_sha}" >&2
+        echo -e "  # then: git worktree remove ${repo_root} && git branch -D ${branch}" >&2
+        exit 1
+      fi
+    else
+      warn "Could not fast-forward: '${base_branch}' is not checked out in any worktree."
+      echo -e "Resolve manually:" >&2
+      echo -e "  cd <a worktree on ${base_branch}> && git merge --ff-only ${ff_sha}" >&2
+      echo -e "  git worktree remove ${repo_root} && git branch -D ${branch}" >&2
+      exit 1
+    fi
+  fi
+}
+
 # Interactive branch picker. Lists remote branches, optionally falls back to local.
 # Args: <exclude_branch> <current_base> [--no-fallback]
 # Prints selected branch name to stdout (empty if invalid choice / EOF).
@@ -629,6 +688,37 @@ cmd_finish() {
     # CLOSED (not merged), empty (no PR), or gh call failed → fall through to local flow
   fi
 
+  # Detect merge commits (created by wt update) to choose strategy.
+  # Merge commits present → squash path. Clean history → rebase path.
+  local has_merges use_squash
+  has_merges=$(git rev-list --merges "${base_branch}..HEAD" | head -1)
+  use_squash=0
+  [[ -n "$has_merges" ]] && use_squash=1
+
+  if (( use_squash )); then
+    # Pre-flight: base_branch must be an ancestor of HEAD (i.e. wt update was run).
+    # If it's not, there are new base commits the worktree hasn't merged yet.
+    if ! git merge-base --is-ancestor "$base_branch" HEAD 2>/dev/null; then
+      warn "Base branch has commits not yet in this worktree."
+      echo -e "  Run 'wt update' first, then retry 'wt finish'." >&2
+      exit 1
+    fi
+    if (( auto_yes == 0 )); then
+      confirm "Squash-merge ${BOLD}${branch}${RESET} into ${BOLD}${base_branch}${RESET}?" \
+        || { info "Aborted."; exit 0; }
+    fi
+    # Create a single squash commit: tree from HEAD (all changes), parent = base_branch only.
+    local squash_commit
+    squash_commit=$(git commit-tree "HEAD^{tree}" -p "$base_branch" -m "$description")
+    # Fast-forward base to the squash commit.
+    _ff_onto_base "$squash_commit" "$base_branch" "$repo_root" "$branch"
+    _cleanup_worktree "$repo_root" "$branch" "$main_wt" "$project" "$slug" "force" "$project_root"
+    success "Done! Worktree squash-merged and cleaned up."
+    echo "$main_wt"
+    return 0
+  fi
+
+  # Rebase path (no merge commits — clean linear history)
   if (( auto_yes == 0 )); then
     confirm "Rebase ${BOLD}${branch}${RESET} onto ${BOLD}${base_branch}${RESET} and fast-forward?" \
       || { info "Aborted."; exit 0; }
@@ -637,51 +727,14 @@ cmd_finish() {
   if ! _rebase_onto_base "$base_branch" "$branch" --prefer-local; then
     git rebase --abort 2>/dev/null || true
     warn "Rebase conflict. Aborted."
-    echo -e "  Run 'wt sync' to rebase and resolve conflicts first, then retry 'wt finish'." >&2
+    echo -e "  Option 1: Run 'wt sync' to rebase and resolve conflicts, then retry 'wt finish'." >&2
+    echo -e "  Option 2: Run 'wt update' to merge (instead of rebase) the base branch." >&2
     exit 1
   fi
   success "Rebase successful"
 
   # Fast-forward base to the rebased tip.
-  # Strategy 1: from within this worktree (works when base_branch is NOT checked out here)
-  local ff_err
-  if ff_err=$(git fetch . "HEAD:${base_branch}" 2>&1); then
-    success "Fast-forward successful"
-  else
-    # Strategy 2: find any worktree (including main) that has base_branch checked out
-    local ff_wt=""
-    while IFS= read -r porcelain_line; do
-      if [[ "$porcelain_line" == worktree\ * ]]; then
-        local wt_cand="${porcelain_line#worktree }"
-        [[ "$wt_cand" == "$repo_root" ]] && continue  # skip current worktree
-        local wt_cand_branch
-        wt_cand_branch=$(git -C "$wt_cand" symbolic-ref --short HEAD 2>/dev/null || echo "")
-        if [[ "$wt_cand_branch" == "$base_branch" ]]; then
-          ff_wt="$wt_cand"
-          break
-        fi
-      fi
-    done < <(git worktree list --porcelain 2>/dev/null)
-
-    if [[ -n "$ff_wt" ]]; then
-      local merge_err
-      if merge_err=$(git -C "$ff_wt" merge --ff-only "$branch" 2>&1); then
-        success "Fast-forward successful (from worktree: $(basename "$ff_wt"))"
-      else
-        warn "Fast-forward failed: ${merge_err}"
-        echo -e "Resolve manually:" >&2
-        echo -e "  cd ${ff_wt} && git merge --ff-only ${branch}" >&2
-        echo -e "  # then: git worktree remove ${repo_root} && git branch -D ${branch}" >&2
-        exit 1
-      fi
-    else
-      warn "Could not fast-forward: '${base_branch}' is not checked out in any worktree."
-      echo -e "Resolve manually:" >&2
-      echo -e "  cd <a worktree on ${base_branch}> && git merge --ff-only ${branch}" >&2
-      echo -e "  git worktree remove ${repo_root} && git branch -D ${branch}" >&2
-      exit 1
-    fi
-  fi
+  _ff_onto_base HEAD "$base_branch" "$repo_root" "$branch"
 
   _cleanup_worktree "$repo_root" "$branch" "$main_wt" "$project" "$slug" "force" "$project_root"
 
@@ -722,10 +775,114 @@ cmd_sync() {
     warn "Rebase paused — conflicts detected."
     echo -e "  Fix conflicts, then:  git add <files> && git rebase --continue" >&2
     echo -e "  To abort:             git rebase --abort" >&2
+    echo -e "  Alternative:          git rebase --abort && wt update  (merge instead of rebase)" >&2
     exit 1
   fi
 
   success "Synced — ${branch} is up to date with ${base_branch}"
+}
+
+# wt update — merge local base branch into worktree branch
+cmd_update() {
+  local repo_root
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+    || error "Not inside a git repository"
+
+  [[ -d "${repo_root}/.git" ]] \
+    && error "You are in the main checkout, not a worktree."
+
+  local meta_file="${repo_root}/${META_FILE}"
+  [[ -f "$meta_file" ]] \
+    || error "No ${META_FILE} found. Was this worktree created with 'wt new'?"
+
+  local base_branch description branch
+  base_branch=$(read_meta "$meta_file" "base_branch")
+  description=$(read_meta "$meta_file" "description")
+  branch=$(read_meta "$meta_file" "branch")
+
+  [[ -z "$base_branch" || -z "$branch" ]] \
+    && error "Corrupt .wt-meta — missing required fields"
+
+  info "Worktree: ${BOLD}${branch}${RESET}"
+  info "Description: ${description}"
+  info "Base branch: ${BOLD}${base_branch}${RESET}"
+
+  # Safety: in-progress merge or rebase
+  local git_dir
+  git_dir=$(git rev-parse --git-dir)
+  if [[ -f "${git_dir}/MERGE_HEAD" ]]; then
+    error "A merge is already in progress. Run 'git merge --continue' or 'git merge --abort' first."
+  fi
+  if [[ -d "${git_dir}/rebase-merge" ]] || [[ -d "${git_dir}/rebase-apply" ]]; then
+    error "A rebase is already in progress. Run 'git rebase --continue' or 'git rebase --abort' first."
+  fi
+
+  # Safety: uncommitted tracked changes (untracked files are OK)
+  if git status --porcelain | grep -qv '^??'; then
+    error "Uncommitted changes present. Commit or stash before 'wt update'."
+  fi
+
+  # Check: base branch ref must exist locally
+  if ! git rev-parse --verify "${base_branch}" &>/dev/null; then
+    error "Base branch '${base_branch}' not found locally. Run 'git fetch' or 'wt retarget'."
+  fi
+
+  # Check: already up to date
+  if git merge-base --is-ancestor "${base_branch}" HEAD 2>/dev/null; then
+    success "Already up to date with ${base_branch}."
+    return 0
+  fi
+
+  info "Merging ${base_branch} into ${branch}..."
+  local merge_output
+  if merge_output=$(git merge --no-edit "${base_branch}" 2>&1); then
+    success "Merged ${base_branch} into ${branch}."
+  else
+    warn "Merge conflicts detected."
+    echo "" >&2
+
+    # Determine conflicted files
+    local conflicted_set
+    conflicted_set=$(git diff --name-only --diff-filter=U)
+
+    # Show auto-merged files (appeared in git output but not in conflict set)
+    local auto_merged_str=""
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      if ! printf '%s\n' "$conflicted_set" | grep -qxF "$f"; then
+        [[ -n "$auto_merged_str" ]] && auto_merged_str="${auto_merged_str}, "
+        auto_merged_str="${auto_merged_str}${f}"
+      fi
+    done < <(printf '%s\n' "$merge_output" | grep '^Auto-merging ' | awk '{print $2}')
+    if [[ -n "$auto_merged_str" ]]; then
+      echo "✓ Auto-merged: ${auto_merged_str}" >&2
+      echo "" >&2
+    fi
+
+    # Show conflicted files with line numbers and commit context
+    echo "✗ Conflicted files:" >&2
+    local merge_base
+    merge_base=$(git merge-base HEAD MERGE_HEAD)
+    while IFS= read -r file; do
+      [[ -z "$file" ]] && continue
+      local lines count label
+      lines=$(grep -n '^<<<<<<<' "$file" | cut -d: -f1 | paste -sd, -)
+      count=$(grep -c '^<<<<<<<' "$file" || echo 0)
+      [[ "$count" -eq 1 ]] && label="conflict" || label="conflicts"
+      echo "  ${file}:${lines} (${count} ${label})" >&2
+      echo "    HEAD:" >&2
+      git log --oneline "${merge_base}..HEAD" -- "$file" | sed 's/^/      /' >&2
+      echo "    ${base_branch}:" >&2
+      git log --oneline "${merge_base}..MERGE_HEAD" -- "$file" | sed 's/^/      /' >&2
+    done <<< "$conflicted_set"
+
+    echo "" >&2
+    warn "Resolve conflicts, then run:"
+    echo -e "  git add <resolved-files>" >&2
+    echo -e "  git merge --continue" >&2
+    echo -e "  To abort:  git merge --abort" >&2
+    exit 1
+  fi
 }
 
 # wt abandon — abandon worktree without merging
@@ -852,13 +1009,20 @@ cmd_pr() {
   git remote get-url origin &>/dev/null \
     || error "No 'origin' remote configured. 'wt pr' requires a remote to push to."
 
-  if ! _rebase_onto_base "$base_branch" "$branch"; then
-    warn "Rebase paused — conflicts detected."
-    echo -e "  Fix conflicts, then:  git add <files> && git rebase --continue" >&2
-    echo -e "  To abort:             git rebase --abort && git checkout ${branch}" >&2
-    exit 1
+  # Skip rebase when merge commits are present (created by wt update).
+  # Rebasing would re-encounter conflicts already resolved by the merge.
+  # Use || true so an unresolvable base_branch ref (remote-only after retarget) defaults to rebase.
+  local pr_has_merges
+  pr_has_merges=$(git rev-list --merges "${base_branch}..HEAD" 2>/dev/null | head -1 || true)
+  if [[ -z "$pr_has_merges" ]]; then
+    if ! _rebase_onto_base "$base_branch" "$branch"; then
+      warn "Rebase paused — conflicts detected."
+      echo -e "  Fix conflicts, then:  git add <files> && git rebase --continue" >&2
+      echo -e "  To abort:             git rebase --abort && git checkout ${branch}" >&2
+      exit 1
+    fi
+    success "Rebased onto ${base_branch}"
   fi
-  success "Rebased onto ${base_branch}"
 
   info "Pushing ${branch} to origin..."
   git push --force-with-lease origin "${branch}" >&2 \
@@ -1235,6 +1399,7 @@ main() {
     new)            cmd_new "$@" ;;
     finish)         cmd_finish "$@" ;;
     sync)           cmd_sync "$@" ;;
+    update)         cmd_update "$@" ;;
     retarget)       cmd_retarget "$@" ;;
     abandon)        cmd_abandon "$@" ;;
     pr)             cmd_pr "$@" ;;
