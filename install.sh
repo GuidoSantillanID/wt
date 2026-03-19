@@ -14,6 +14,13 @@ fi
 ln -sf "$SCRIPT_DIR/bin/wt" "$BIN_DIR/wt"
 
 echo "Installed wt → $BIN_DIR/wt (symlink)"
+
+# Warn if bash version is too old
+if (( BASH_VERSINFO[0] < 4 )); then
+  echo ""
+  echo "WARNING: wt requires bash 4+. Current bash: ${BASH_VERSION}"
+  echo "macOS: brew install bash"
+fi
 echo ""
 echo "Make sure $BIN_DIR is on your PATH:"
 echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""

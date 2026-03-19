@@ -16,6 +16,23 @@ bash bin/wt-test --keep < /dev/null
 
 Tests require bash 4+ (macOS ships with bash 3.2 — install via `brew install bash`). CI runs on both macOS and Linux.
 
+## ShellCheck
+
+All shell scripts must pass ShellCheck before merging:
+
+```bash
+shellcheck bin/wt bin/wt-test
+```
+
+Install: `brew install shellcheck` (macOS) or `apt-get install shellcheck` (Ubuntu). CI runs ShellCheck on every PR.
+
+## Platform Testing
+
+- **bash 4+** is required — macOS ships with bash 3.2 (install via `brew install bash`)
+- CI runs on both `macos-latest` and `ubuntu-latest` on every PR
+- Test suite exports `WT_SKIP_VERSION_CHECK=1` so it runs under any bash version; the version check is tested separately
+- `LC_ALL=C` is exported in the test suite for consistent sort/comparison behavior
+
 ## Making Changes
 
 - Keep changes focused — one concern per PR
@@ -23,6 +40,7 @@ Tests require bash 4+ (macOS ships with bash 3.2 — install via `brew install b
 - Follow the existing shell style (`set -euo pipefail`, quoted variables, no `eval`)
 - Never use `eval` or `source` `.wt-meta` — parse with `grep | head | cut`
 - All UI output goes to stderr; only directory paths and `wt list` table go to stdout (shell wrapper contract)
+- Safety gates: `--yes` skips routine confirms; `--force` overrides non-skippable gates (untracked files in finish, unpushed commits in drop, open PR in finish)
 
 ## Test-Driven Development
 

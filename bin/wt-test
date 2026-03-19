@@ -11,6 +11,8 @@
 # =============================================================================
 
 set -euo pipefail
+export LC_ALL=C
+export WT_SKIP_VERSION_CHECK=1
 
 WT="${WT_BIN:-$(dirname "$(cd "$(dirname "$0")" && pwd)")/bin/wt}"
 # If run as bin/wt-test, resolve relative to the script's directory
@@ -1146,7 +1148,7 @@ out_c3y=$(printf "y\ny\n" | WT_REGISTRY="$registry_file" bash "$WT" finish 2>&1)
 assert_contains "finish proceeds when user accepts" "Done!" "$out_c3y"
 assert_dir_not_exists "worktree removed after accept" "$WT_UNTRACKED"
 
-section "C3: wt finish --yes — untracked files are destroyed without prompt (auto-accept)"
+section "C3: wt finish --yes — untracked files block despite --yes (non-skippable)"
 cd "$REPO"
 git -C "$REPO" checkout -q dev
 WT_UNTRACKED2="${REPO}/.worktrees/untracked-yes-test"
@@ -1157,9 +1159,12 @@ git -C "$WT_UNTRACKED2" commit -q -m "committed work 2"
 echo "untracked data" > "${WT_UNTRACKED2}/untracked2.txt"
 cd "$WT_UNTRACKED2"
 git -C "$REPO" checkout -q main
-out_c3y2=$(WT_REGISTRY="$registry_file" bash "$WT" finish --yes 2>&1) || true
-assert_contains "finish --yes succeeds with untracked files" "Done!" "$out_c3y2"
-assert_dir_not_exists "worktree removed with --yes" "$WT_UNTRACKED2"
+out_c3y2=$(WT_REGISTRY="$registry_file" bash "$WT" finish --yes 2>&1 < /dev/null) || true
+assert_not_contains "finish --yes aborts with untracked (non-skippable)" "Done!" "$out_c3y2"
+assert_dir_exists "worktree preserved when --yes cannot bypass gate" "$WT_UNTRACKED2"
+# Cleanup preserved worktree
+git -C "$REPO" worktree remove "$WT_UNTRACKED2" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/untracked-yes-test" 2>/dev/null || true
 
 # ─── S2: wt finish --force skips PR-open block ───────────────────────────────
 
@@ -1359,6 +1364,7 @@ git -C "$REPO" branch -D "wt/s5-second" 2>/dev/null || true
 git -C "$REPO" remote remove origin 2>/dev/null || true
 rm -rf "$BARE_S5"
 
+
 # ─── M1: slugify strips leading hyphens ──────────────────────────────────────
 
 section "M1: slugify — leading hyphens stripped from slug"
@@ -1525,6 +1531,368 @@ assert_contains "retarget shows Aborted on EOF" "Aborted" "$out_s4"
 cd "$S4_PROJ"
 git -C "$S4_PROJ" worktree remove "$S4_WT" --force 2>/dev/null || true
 git -C "$S4_PROJ" branch -D "wt/s4-test" 2>/dev/null || true
+
+# ─── Chunk 1: Test gaps (existing behavior) ──────────────────────────────────
+
+section "T1a: wt finish — rebase conflict aborts, worktree preserved"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_CONF="${REPO}/.worktrees/conf-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "conf test" 2>/dev/null
+echo "wt-version" > "${WT_CONF}/conflict.txt"
+git -C "$WT_CONF" add conflict.txt
+git -C "$WT_CONF" commit -q -m "wt conflict commit"
+git -C "$REPO" checkout -q dev
+echo "base-version" > "${REPO}/conflict.txt"
+git -C "$REPO" add conflict.txt
+git -C "$REPO" commit -q -m "base conflict commit"
+git -C "$REPO" checkout -q main
+cd "$WT_CONF"
+_tmp_t1a=$(mktemp)
+printf "y\n" | WT_REGISTRY="$registry_file" bash "$WT" finish 2>"$_tmp_t1a" || true
+out_t1a=$(cat "$_tmp_t1a"); rm -f "$_tmp_t1a"
+assert_contains "finish aborts on conflict" "conflict" "$out_t1a"
+assert_dir_exists "worktree preserved after conflict" "$WT_CONF"
+branch_t1a=$(git -C "$REPO" rev-parse --verify "wt/conf-test" 2>/dev/null || echo "gone")
+assert_not_contains "branch preserved after conflict" "gone" "$branch_t1a"
+# Cleanup
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+git -C "$REPO" rm -qf conflict.txt 2>/dev/null || true
+git -C "$REPO" commit -q -m "remove conflict file" 2>/dev/null || true
+git -C "$REPO" worktree remove "$WT_CONF" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/conf-test" 2>/dev/null || true
+git -C "$REPO" checkout -q dev
+
+section "T1b: wt sync — rebase conflict leaves rebase paused"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_SYNC_CONF="${REPO}/.worktrees/sync-conf-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "sync conf test" 2>/dev/null
+echo "wt-sync-version" > "${WT_SYNC_CONF}/sync-conflict.txt"
+git -C "$WT_SYNC_CONF" add sync-conflict.txt
+git -C "$WT_SYNC_CONF" commit -q -m "wt sync conflict commit"
+git -C "$REPO" checkout -q dev
+echo "base-sync-version" > "${REPO}/sync-conflict.txt"
+git -C "$REPO" add sync-conflict.txt
+git -C "$REPO" commit -q -m "base sync conflict commit"
+cd "$WT_SYNC_CONF"
+out_t1b=$(WT_REGISTRY="$registry_file" bash "$WT" sync 2>&1) || true
+assert_contains "sync reports conflict paused" "conflict" "$out_t1b"
+assert_dir_exists "worktree preserved after sync conflict" "$WT_SYNC_CONF"
+# Cleanup: abort rebase, remove files
+git -C "$WT_SYNC_CONF" rebase --abort 2>/dev/null || true
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+git -C "$REPO" rm -qf sync-conflict.txt 2>/dev/null || true
+git -C "$REPO" commit -q -m "remove sync conflict file" 2>/dev/null || true
+git -C "$REPO" worktree remove "$WT_SYNC_CONF" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/sync-conf-test" 2>/dev/null || true
+git -C "$REPO" checkout -q dev
+
+section "T1c: wt abandon — error when run from main checkout"
+cd "$REPO"
+out_t1c=$(wt abandon 2>&1 || true)
+assert_contains "abandon errors when run from main checkout" "main checkout" "$out_t1c"
+
+section "T1d: wt finish --force — interactive confirm without --yes (pipe 'y')"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_T1D="${REPO}/.worktrees/t1d-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "t1d test" 2>/dev/null
+echo "t1d-work" > "${WT_T1D}/t1d.txt"
+git -C "$WT_T1D" add t1d.txt
+git -C "$WT_T1D" commit -q -m "t1d test commit"
+MOCK_T1D="${TMPROOT}/mock-t1d"
+mkdir -p "$MOCK_T1D"
+cat > "${MOCK_T1D}/gh" << 'MOCK_T1D_EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "pr" && "$2" == "view" ]]; then echo "OPEN"; fi
+MOCK_T1D_EOF
+chmod +x "${MOCK_T1D}/gh"
+git -C "$REPO" checkout -q main
+cd "$WT_T1D"
+_tmp_t1d=$(mktemp)
+stdout_t1d=$(printf "y\n" | PATH="${MOCK_T1D}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" finish --force 2>"$_tmp_t1d") || true
+out_t1d=$(cat "$_tmp_t1d"); rm -f "$_tmp_t1d"
+assert_contains "finish --force with piped-y succeeds" "Done!" "$out_t1d"
+assert_eq "stdout is main worktree path" "$REPO" "$stdout_t1d"
+assert_dir_not_exists "worktree removed" "$WT_T1D"
+rm -rf "$MOCK_T1D"
+
+# ─── Chunk 3: wt drop — unpushed commits check ───────────────────────────────
+
+section "T3a: wt abandon — unpushed commits warns and blocks on 'n'"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_T3A="${REPO}/.worktrees/t3a-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "t3a test" 2>/dev/null
+echo "t3a-work" > "${WT_T3A}/t3a.txt"
+git -C "$WT_T3A" add t3a.txt
+git -C "$WT_T3A" commit -q -m "t3a unpushed commit"
+cd "$WT_T3A"
+out_t3a=$(printf "n\n" | WT_REGISTRY="$registry_file" bash "$WT" abandon 2>&1) || true
+assert_contains "warns about unpushed commits" "unpushed" "$out_t3a"
+assert_contains "shows commit count" "1" "$out_t3a"
+assert_dir_exists "worktree preserved after 'n'" "$WT_T3A"
+branch_t3a=$(git -C "$REPO" rev-parse --verify "wt/t3a-test" 2>/dev/null || echo "gone")
+assert_not_contains "branch preserved after 'n'" "gone" "$branch_t3a"
+cd "$REPO"
+git -C "$REPO" worktree remove "$WT_T3A" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/t3a-test" 2>/dev/null || true
+
+section "T3b: wt abandon --yes — unpushed commits block despite --yes (non-skippable)"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_T3B="${REPO}/.worktrees/t3b-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "t3b test" 2>/dev/null
+echo "t3b-work" > "${WT_T3B}/t3b.txt"
+git -C "$WT_T3B" add t3b.txt
+git -C "$WT_T3B" commit -q -m "t3b unpushed commit"
+cd "$WT_T3B"
+out_t3b=$(WT_REGISTRY="$registry_file" bash "$WT" abandon --yes 2>&1 < /dev/null) || true
+assert_dir_exists "worktree preserved when --yes cannot bypass unpushed gate" "$WT_T3B"
+branch_t3b=$(git -C "$REPO" rev-parse --verify "wt/t3b-test" 2>/dev/null || echo "gone")
+assert_not_contains "branch preserved after --yes abort" "gone" "$branch_t3b"
+cd "$REPO"
+git -C "$REPO" worktree remove "$WT_T3B" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/t3b-test" 2>/dev/null || true
+
+section "T3c: wt abandon --force --yes — unpushed commits: force overrides gate"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_T3C="${REPO}/.worktrees/t3c-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "t3c test" 2>/dev/null
+echo "t3c-work" > "${WT_T3C}/t3c.txt"
+git -C "$WT_T3C" add t3c.txt
+git -C "$WT_T3C" commit -q -m "t3c unpushed commit"
+cd "$WT_T3C"
+_tmp_t3c=$(mktemp)
+WT_REGISTRY="$registry_file" bash "$WT" abandon --force --yes 2>"$_tmp_t3c" || true
+out_t3c=$(cat "$_tmp_t3c"); rm -f "$_tmp_t3c"
+assert_contains "abandon --force --yes succeeds with unpushed commits" "Dropped" "$out_t3c"
+assert_dir_not_exists "worktree removed" "$WT_T3C"
+branch_t3c=$(git -C "$REPO" rev-parse --verify "wt/t3c-test" 2>/dev/null || echo "gone")
+assert_eq "branch deleted after force drop" "gone" "$branch_t3c"
+
+section "T3d: wt abandon --yes — 0 commits ahead: succeeds without unpushed gate"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_T3D="${REPO}/.worktrees/t3d-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "t3d test" 2>/dev/null
+# No commits added — branch is 0 ahead of base
+cd "$WT_T3D"
+_tmp_t3d=$(mktemp)
+WT_REGISTRY="$registry_file" bash "$WT" abandon --yes 2>"$_tmp_t3d" || true
+out_t3d=$(cat "$_tmp_t3d"); rm -f "$_tmp_t3d"
+assert_contains "abandon --yes with 0 ahead succeeds" "Dropped" "$out_t3d"
+assert_dir_not_exists "worktree removed" "$WT_T3D"
+
+# ─── Chunk 4: wt finish — non-skippable untracked + --force ──────────────────
+
+section "T4b: wt finish --force --yes — untracked files: force overrides gate"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_T4B="${REPO}/.worktrees/t4b-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "t4b test" 2>/dev/null
+echo "t4b-committed" > "${WT_T4B}/t4b.txt"
+git -C "$WT_T4B" add t4b.txt
+git -C "$WT_T4B" commit -q -m "t4b committed work"
+echo "t4b-untracked" > "${WT_T4B}/t4b-untracked.txt"
+git -C "$REPO" checkout -q main
+cd "$WT_T4B"
+_tmp_t4b=$(mktemp)
+WT_REGISTRY="$registry_file" bash "$WT" finish --force --yes 2>"$_tmp_t4b" || true
+out_t4b=$(cat "$_tmp_t4b"); rm -f "$_tmp_t4b"
+assert_contains "finish --force --yes succeeds despite untracked" "Done!" "$out_t4b"
+assert_dir_not_exists "worktree removed" "$WT_T4B"
+branch_t4b=$(git -C "$REPO" rev-parse --verify "wt/t4b-test" 2>/dev/null || echo "gone")
+assert_eq "branch deleted after force finish" "gone" "$branch_t4b"
+
+# ─── Chunk 6: --dry-run ───────────────────────────────────────────────────────
+
+section "T6a: wt finish --dry-run — shows plan, worktree intact, no stdout"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_T6A="${REPO}/.worktrees/t6a-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "t6a test" 2>/dev/null
+echo "t6a-work" > "${WT_T6A}/t6a.txt"
+git -C "$WT_T6A" add t6a.txt
+git -C "$WT_T6A" commit -q -m "t6a test commit"
+cd "$WT_T6A"
+_tmp_t6a=$(mktemp)
+stdout_t6a=$(WT_REGISTRY="$registry_file" bash "$WT" finish --dry-run 2>"$_tmp_t6a") || true
+out_t6a=$(cat "$_tmp_t6a"); rm -f "$_tmp_t6a"
+assert_contains "finish dry-run mentions [dry-run]" "[dry-run]" "$out_t6a"
+assert_eq "finish dry-run produces no stdout" "" "$stdout_t6a"
+assert_dir_exists "worktree intact after finish dry-run" "$WT_T6A"
+branch_t6a=$(git -C "$REPO" rev-parse --verify "wt/t6a-test" 2>/dev/null || echo "gone")
+assert_not_contains "branch intact after finish dry-run" "gone" "$branch_t6a"
+cd "$REPO"
+git -C "$REPO" worktree remove "$WT_T6A" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/t6a-test" 2>/dev/null || true
+
+section "T6b: wt abandon --dry-run — shows plan, worktree intact"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_T6B="${REPO}/.worktrees/t6b-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "t6b test" 2>/dev/null
+echo "t6b-work" > "${WT_T6B}/t6b.txt"
+git -C "$WT_T6B" add t6b.txt
+git -C "$WT_T6B" commit -q -m "t6b test commit"
+cd "$WT_T6B"
+_tmp_t6b=$(mktemp)
+WT_REGISTRY="$registry_file" bash "$WT" abandon --dry-run 2>"$_tmp_t6b" || true
+out_t6b=$(cat "$_tmp_t6b"); rm -f "$_tmp_t6b"
+assert_contains "abandon dry-run mentions [dry-run]" "[dry-run]" "$out_t6b"
+assert_dir_exists "worktree intact after drop dry-run" "$WT_T6B"
+branch_t6b=$(git -C "$REPO" rev-parse --verify "wt/t6b-test" 2>/dev/null || echo "gone")
+assert_not_contains "branch intact after drop dry-run" "gone" "$branch_t6b"
+cd "$REPO"
+git -C "$REPO" worktree remove "$WT_T6B" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/t6b-test" 2>/dev/null || true
+
+section "T6c: wt doctor --dry-run — reports orphan, does not delete"
+cd "$REPO"
+git -C "$REPO" branch wt/dry-orphan 2>/dev/null
+_tmp_t6c=$(mktemp)
+WT_REGISTRY="$registry_file" bash "$WT" doctor --dry-run > "$_tmp_t6c" 2>&1 < /dev/null || true
+out_t6c=$(cat "$_tmp_t6c"); rm -f "$_tmp_t6c"
+assert_contains "doctor dry-run reports orphan" "dry-orphan" "$out_t6c"
+assert_contains "doctor dry-run mentions [dry-run]" "[dry-run]" "$out_t6c"
+branch_t6c=$(git -C "$REPO" rev-parse --verify "wt/dry-orphan" 2>/dev/null || echo "gone")
+assert_not_contains "orphan branch preserved with --dry-run" "gone" "$branch_t6c"
+git -C "$REPO" branch -D "wt/dry-orphan" 2>/dev/null || true
+
+section "T6d: wt finish --dry-run + uncommitted changes → errors before dry-run"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_T6D="${REPO}/.worktrees/t6d-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "t6d test" 2>/dev/null
+echo "uncommitted" >> "${WT_T6D}/README.md"
+cd "$WT_T6D"
+out_t6d=$(WT_REGISTRY="$registry_file" bash "$WT" finish --dry-run 2>&1 || true)
+assert_contains "finish dry-run still errors on uncommitted" "Uncommitted changes" "$out_t6d"
+assert_not_contains "finish dry-run output absent when erroring early" "[dry-run]" "$out_t6d"
+git -C "$WT_T6D" checkout -- README.md
+cd "$REPO"
+git -C "$REPO" worktree remove "$WT_T6D" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/t6d-test" 2>/dev/null || true
+
+section "T6e: wt finish --dry-run + untracked files → shows plan, does not prompt"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_T6E="${REPO}/.worktrees/t6e-test"
+WT_REGISTRY="$registry_file" bash "$WT" new "t6e test" 2>/dev/null
+echo "t6e-work" > "${WT_T6E}/t6e.txt"
+git -C "$WT_T6E" add t6e.txt
+git -C "$WT_T6E" commit -q -m "t6e test commit"
+# Add an untracked file — dry-run should show plan, not silently abort
+echo "precious" > "${WT_T6E}/untracked-t6e.txt"
+cd "$WT_T6E"
+out_t6e=$(WT_REGISTRY="$registry_file" bash "$WT" finish --dry-run 2>&1 < /dev/null || true)
+assert_contains "finish dry-run with untracked shows plan" "[dry-run]" "$out_t6e"
+assert_contains "finish dry-run with untracked warns about loss" "ntracked" "$out_t6e"
+assert_dir_exists "worktree intact after finish dry-run with untracked" "$WT_T6E"
+cd "$REPO"
+git -C "$REPO" worktree remove "$WT_T6E" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/t6e-test" 2>/dev/null || true
+
+# ─── Chunk 7: doctor .wt-meta repair ─────────────────────────────────────────
+
+section "T7a: wt doctor — missing .wt-meta detected and repaired"
+T7A_PROJ="${TMPROOT}/t7a-proj"
+mkdir -p "$T7A_PROJ"
+git -C "$T7A_PROJ" init -q -b main
+git -C "$T7A_PROJ" config user.email "test@test.com"
+git -C "$T7A_PROJ" config user.name "Test"
+echo "init" > "$T7A_PROJ/README.md"
+git -C "$T7A_PROJ" add README.md
+git -C "$T7A_PROJ" commit -q -m "initial"
+T7A_WT="${T7A_PROJ}/.worktrees/t7a-wt"
+mkdir -p "$(dirname "$T7A_WT")"
+git -C "$T7A_PROJ" worktree add "$T7A_WT" -b wt/t7a-wt 2>/dev/null
+echo "work" > "${T7A_WT}/work.txt"
+git -C "$T7A_WT" add work.txt
+git -C "$T7A_WT" commit -q -m "t7a work"
+echo "$T7A_PROJ" >> "$registry_file"
+rm -f "${T7A_WT}/.wt-meta"
+_tmp_t7a=$(mktemp)
+printf "y\n" | WT_REGISTRY="$registry_file" bash "$WT" doctor > "$_tmp_t7a" 2>&1 || true
+out_t7a=$(cat "$_tmp_t7a"); rm -f "$_tmp_t7a"
+assert_contains "doctor detects missing .wt-meta" "wt-meta" "$out_t7a"
+if [[ -f "${T7A_WT}/.wt-meta" ]]; then
+  pass "doctor repaired missing .wt-meta"
+else
+  fail "doctor did not repair missing .wt-meta"
+fi
+git -C "$T7A_PROJ" worktree remove "$T7A_WT" --force 2>/dev/null || true
+git -C "$T7A_PROJ" branch -D "wt/t7a-wt" 2>/dev/null || true
+grep -v "^${T7A_PROJ}$" "$registry_file" > "${registry_file}.tmp" 2>/dev/null && mv "${registry_file}.tmp" "$registry_file" || true
+
+section "T7b: wt doctor — corrupt .wt-meta (missing fields) offered for repair"
+T7B_PROJ="${TMPROOT}/t7b-proj"
+mkdir -p "$T7B_PROJ"
+git -C "$T7B_PROJ" init -q -b main
+git -C "$T7B_PROJ" config user.email "test@test.com"
+git -C "$T7B_PROJ" config user.name "Test"
+echo "init" > "$T7B_PROJ/README.md"
+git -C "$T7B_PROJ" add README.md
+git -C "$T7B_PROJ" commit -q -m "initial"
+T7B_WT="${T7B_PROJ}/.worktrees/t7b-wt"
+mkdir -p "$(dirname "$T7B_WT")"
+git -C "$T7B_PROJ" worktree add "$T7B_WT" -b wt/t7b-wt 2>/dev/null
+echo "$T7B_PROJ" >> "$registry_file"
+echo "base_branch=main" > "${T7B_WT}/.wt-meta"
+_tmp_t7b=$(mktemp)
+printf "y\n" | WT_REGISTRY="$registry_file" bash "$WT" doctor > "$_tmp_t7b" 2>&1 || true
+out_t7b=$(cat "$_tmp_t7b"); rm -f "$_tmp_t7b"
+assert_contains "doctor detects corrupt .wt-meta" "Corrupt" "$out_t7b"
+meta_branch_t7b=$(grep "^branch=" "${T7B_WT}/.wt-meta" 2>/dev/null | cut -d= -f2- || echo "")
+if [[ -n "$meta_branch_t7b" ]]; then
+  pass "doctor repaired branch field in corrupt .wt-meta"
+else
+  fail "doctor did not repair branch field in corrupt .wt-meta"
+fi
+git -C "$T7B_PROJ" worktree remove "$T7B_WT" --force 2>/dev/null || true
+git -C "$T7B_PROJ" branch -D "wt/t7b-wt" 2>/dev/null || true
+grep -v "^${T7B_PROJ}$" "$registry_file" > "${registry_file}.tmp" 2>/dev/null && mv "${registry_file}.tmp" "$registry_file" || true
+
+section "T7c: wt doctor --dry-run — missing .wt-meta reports 'Would repair', does not write"
+T7C_PROJ="${TMPROOT}/t7c-proj"
+mkdir -p "$T7C_PROJ"
+git -C "$T7C_PROJ" init -q -b main
+git -C "$T7C_PROJ" config user.email "test@test.com"
+git -C "$T7C_PROJ" config user.name "Test"
+echo "init" > "$T7C_PROJ/README.md"
+git -C "$T7C_PROJ" add README.md
+git -C "$T7C_PROJ" commit -q -m "initial"
+T7C_WT="${T7C_PROJ}/.worktrees/t7c-wt"
+mkdir -p "$(dirname "$T7C_WT")"
+git -C "$T7C_PROJ" worktree add "$T7C_WT" -b wt/t7c-wt 2>/dev/null
+echo "$T7C_PROJ" >> "$registry_file"
+rm -f "${T7C_WT}/.wt-meta"
+_tmp_t7c=$(mktemp)
+WT_REGISTRY="$registry_file" bash "$WT" doctor --dry-run > "$_tmp_t7c" 2>&1 < /dev/null || true
+out_t7c=$(cat "$_tmp_t7c"); rm -f "$_tmp_t7c"
+assert_contains "doctor dry-run reports would-repair .wt-meta" "[dry-run]" "$out_t7c"
+if [[ ! -f "${T7C_WT}/.wt-meta" ]]; then
+  pass "dry-run did not create .wt-meta"
+else
+  fail "dry-run unexpectedly created .wt-meta"
+fi
+git -C "$T7C_PROJ" worktree remove "$T7C_WT" --force 2>/dev/null || true
+git -C "$T7C_PROJ" branch -D "wt/t7c-wt" 2>/dev/null || true
+grep -v "^${T7C_PROJ}$" "$registry_file" > "${registry_file}.tmp" 2>/dev/null && mv "${registry_file}.tmp" "$registry_file" || true
+
+# ─── Chunk 8: Cross-platform hardening ───────────────────────────────────────
+
+section "T8: bash version check present in bin/wt"
+if grep -q "BASH_VERSINFO\[0\]" "$WT"; then
+  pass "bin/wt has bash version check"
+else
+  fail "bin/wt missing bash version check"
+fi
 
 # ─── wt update ───────────────────────────────────────────────────────────────
 

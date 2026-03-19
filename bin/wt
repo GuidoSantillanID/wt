@@ -7,16 +7,23 @@
 # parallel development workflows.
 #
 # COMMANDS
-#   wt new [--with-deps] "<description>"   Create a worktree with auto-named branch
-#   wt finish [--yes|-y] [--force]         Integrate worktree into base (rebase or squash), clean up
-#   wt sync                                Rebase onto latest base branch (from origin)
-#   wt update                              Merge local base branch into worktree (LLM-friendly)
-#   wt retarget [branch]                   Change this worktree's base branch
-#   wt abandon [--yes|-y]                  Abandon worktree without merging, clean up
-#   wt pr [--draft] [--yes|-y]             Push branch and open a GitHub PR (requires gh)
-#   wt status                              Show current worktree info
-#   wt list                                Show all worktrees across projects
-#   wt help                                Show this help
+#   wt new [--with-deps] "<description>"        Create a worktree with auto-named branch
+#   wt finish [--yes|-y] [--force] [--dry-run]  Integrate worktree into base (rebase or squash), clean up
+#   wt sync                                     Rebase onto latest base branch (from origin)
+#   wt update                                   Merge local base branch into worktree (LLM-friendly)
+#   wt retarget [branch]                        Change this worktree's base branch
+#   wt abandon [--yes|-y] [--force] [--dry-run] Abandon worktree without merging, clean up
+#   wt pr [--draft] [--yes|-y]                  Push branch and open a GitHub PR (requires gh)
+#   wt status                                   Show current worktree info
+#   wt list                                     Show all worktrees across projects
+#   wt doctor [--dry-run]                       Check and repair worktree health
+#   wt help                                     Show this help
+#
+# FLAGS
+#   --yes / -y   Skip routine confirmation prompts (non-skippable safety gates still prompt)
+#   --force      Override non-skippable safety gates (untracked files in finish,
+#                unpushed commits in abandon, open PR in finish)
+#   --dry-run    Show what would happen without making any changes (finish, abandon, doctor)
 #
 # INSTALLATION
 #   1. Run ./install.sh  (copies bin/wt to ~/.local/bin/wt)
@@ -54,10 +61,18 @@
 #   - .wt-meta stores key=value pairs (no quoting, read with cut -d= -f2-)
 #   - `wt finish` reads .wt-meta, safety-checks, integrates into base (rebase or squash), removes worktree+branch
 #   - `wt abandon` abandons the worktree without merging
+#   - Safety gates: --yes skips routine confirms; --force overrides non-skippable gates
+#   - Requires bash 4+ (macOS ships with 3.2; install via brew install bash)
 #
 # =============================================================================
 
 set -euo pipefail
+
+if (( BASH_VERSINFO[0] < 4 )) && [[ "${WT_SKIP_VERSION_CHECK:-}" != "1" ]]; then
+  echo "wt requires bash 4+. Current: ${BASH_VERSION}" >&2
+  echo "macOS: brew install bash" >&2
+  exit 1
+fi
 
 # ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -200,15 +215,15 @@ wt — Git Worktree Lifecycle Tool
 
 USAGE
   wt new [--with-deps] "<description>"   Create a worktree with auto-named branch
-  wt finish [--yes|-y] [--force]         Integrate worktree into base (rebase or squash), clean up
-  wt sync                                Rebase onto latest base branch (from origin)
-  wt update                              Merge local base branch into worktree (LLM-friendly)
-  wt retarget [branch]                   Change this worktree's base branch
-  wt abandon [--yes|-y]                  Abandon worktree without merging, clean up
-  wt pr [--draft] [--yes|-y]             Push branch and open a GitHub PR (requires gh)
-  wt status                              Show current worktree info
-  wt list                                Show all active worktrees across projects
-  wt doctor                              Check for orphaned branches/dirs, fix interactively
+  wt finish [--yes|-y] [--force] [--dry-run]  Integrate worktree into base (rebase or squash), clean up
+  wt sync                                     Rebase onto latest base branch (from origin)
+  wt update                                   Merge local base branch into worktree (LLM-friendly)
+  wt retarget [branch]                        Change this worktree's base branch
+  wt abandon [--yes|-y] [--force] [--dry-run] Abandon worktree without merging, clean up
+  wt pr [--draft] [--yes|-y]                  Push branch and open a GitHub PR (requires gh)
+  wt status                                   Show current worktree info
+  wt list                                     Show all active worktrees across projects
+  wt doctor [--dry-run]                       Check for orphaned branches/dirs, fix interactively
   wt help                                Show this help
 
 EXAMPLES
@@ -249,7 +264,7 @@ NOTES
   • After `wt new`, your shell cd's into the new worktree
   • After `wt finish`, your shell cd's back to the main worktree
   • Pass --yes / -y to wt finish, wt abandon, or wt pr to skip confirmation prompts
-  • Pass --force to wt finish to proceed even when a PR is still open on GitHub
+  • Pass --force to wt finish or wt abandon to override non-skippable safety gates
   • Use `wt sync` to rebase long-lived worktrees onto the latest base branch
   • Use `wt update` when conflicts exist — LLM analyses each conflict, resolves clear cases autonomously, asks you for guidance when the resolution requires product or business knowledge
   • `wt pr` requires the GitHub CLI (gh) — https://cli.github.com
@@ -496,7 +511,11 @@ _rebase_onto_base() {
     warn "No remote-tracking branch — using local ${base_branch}"
   fi
   info "Rebasing ${branch} onto ${rebase_target}..."
+  trap 'git rebase --abort 2>/dev/null || true; warn "Interrupted."; exit 130' INT
   git rebase "${rebase_target}" >&2
+  local _rc=$?
+  trap - INT
+  return $_rc
 }
 
 # Fast-forward base_branch to ff_ref using two strategies.
@@ -602,11 +621,12 @@ _pick_base_branch() {
 
 # wt finish — rebase worktree onto base, fast-forward, clean up
 cmd_finish() {
-  local auto_yes=0 force=0
+  local auto_yes=0 force=0 dry_run=0
   for arg in "$@"; do
     case "$arg" in
-      --yes|-y) auto_yes=1 ;;
-      --force)  force=1 ;;
+      --yes|-y)  auto_yes=1 ;;
+      --force)   force=1 ;;
+      --dry-run) dry_run=1 ;;
     esac
   done
 
@@ -642,9 +662,11 @@ cmd_finish() {
   fi
 
   # Safety: untracked files (git worktree remove --force will permanently delete them)
+  # Non-skippable: --yes does not bypass; only --force overrides.
+  # Skipped in --dry-run: show warning in plan output instead of prompting.
   if git status --porcelain | grep -q '^??'; then
     warn "Untracked files in this worktree will be permanently deleted."
-    if (( auto_yes == 0 )); then
+    if (( force == 0 )) && (( dry_run == 0 )); then
       confirm "Continue? Untracked files will be lost." || { info "Aborted."; exit 0; }
     fi
   fi
@@ -703,9 +725,15 @@ cmd_finish() {
       echo -e "  Run 'wt update' first, then retry 'wt finish'." >&2
       exit 1
     fi
-    if (( auto_yes == 0 )); then
+    if (( auto_yes == 0 )) && (( dry_run == 0 )); then
       confirm "Squash-merge ${BOLD}${branch}${RESET} into ${BOLD}${base_branch}${RESET}?" \
         || { info "Aborted."; exit 0; }
+    fi
+    if (( dry_run == 1 )); then
+      info "[dry-run] Would squash-merge ${branch} into ${base_branch}"
+      info "[dry-run] Would fast-forward ${base_branch}"
+      info "[dry-run] Would remove worktree and delete branch ${branch}"
+      return 0
     fi
     # Create a single squash commit: tree from HEAD (all changes), parent = base_branch only.
     local squash_commit
@@ -719,9 +747,16 @@ cmd_finish() {
   fi
 
   # Rebase path (no merge commits — clean linear history)
-  if (( auto_yes == 0 )); then
+  if (( auto_yes == 0 )) && (( dry_run == 0 )); then
     confirm "Rebase ${BOLD}${branch}${RESET} onto ${BOLD}${base_branch}${RESET} and fast-forward?" \
       || { info "Aborted."; exit 0; }
+  fi
+
+  if (( dry_run == 1 )); then
+    info "[dry-run] Would rebase ${branch} onto ${base_branch}"
+    info "[dry-run] Would fast-forward ${base_branch}"
+    info "[dry-run] Would remove worktree and delete branch ${branch}"
+    return 0
   fi
 
   if ! _rebase_onto_base "$base_branch" "$branch" --prefer-local; then
@@ -731,11 +766,13 @@ cmd_finish() {
     echo -e "  Option 2: Run 'wt update' to merge (instead of rebase) the base branch." >&2
     exit 1
   fi
+  trap - INT
   success "Rebase successful"
 
   # Fast-forward base to the rebased tip.
   _ff_onto_base HEAD "$base_branch" "$repo_root" "$branch"
 
+  # Safe to force-delete: branch is already in base_branch via the fast-forward above.
   _cleanup_worktree "$repo_root" "$branch" "$main_wt" "$project" "$slug" "force" "$project_root"
 
   success "Done! Worktree rebased, integrated, and cleaned up."
@@ -887,9 +924,13 @@ cmd_update() {
 
 # wt abandon — abandon worktree without merging
 cmd_abandon() {
-  local auto_yes=0
+  local auto_yes=0 force=0 dry_run=0
   for arg in "$@"; do
-    case "$arg" in --yes|-y) auto_yes=1 ;; esac
+    case "$arg" in
+      --yes|-y)  auto_yes=1 ;;
+      --force)   force=1 ;;
+      --dry-run) dry_run=1 ;;
+    esac
   done
 
   local repo_root
@@ -903,7 +944,8 @@ cmd_abandon() {
   [[ -f "$meta_file" ]] \
     || error "No ${META_FILE} found. Was this worktree created with 'wt new'?"
 
-  local description project project_root slug branch
+  local base_branch description project project_root slug branch
+  base_branch=$(read_meta "$meta_file" "base_branch")
   description=$(read_meta "$meta_file" "description")
   project=$(read_meta "$meta_file" "project")
   project_root=$(read_meta "$meta_file" "project_root")
@@ -916,11 +958,42 @@ cmd_abandon() {
   info "Description: ${description}"
   warn "This will DELETE the worktree and branch WITHOUT merging. Work will be lost."
 
+  if (( dry_run == 1 )); then
+    local ahead_dry=0
+    [[ -n "$base_branch" ]] && ahead_dry=$(git rev-list --count "${base_branch}..HEAD" 2>/dev/null || echo 0)
+    local dirty_dry
+    dirty_dry=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    (( dirty_dry > 0 )) && info "[dry-run] ${dirty_dry} uncommitted file(s) would be lost"
+    (( ahead_dry > 0 )) && info "[dry-run] ${ahead_dry} unpushed commit(s) would be lost"
+    info "[dry-run] Would remove worktree ${repo_root}"
+    info "[dry-run] Would force-delete branch ${branch}"
+    return 0
+  fi
+
   # Safety: uncommitted changes
   if [[ -n "$(git status --porcelain)" ]]; then
     warn "There are uncommitted changes in this worktree."
     if (( auto_yes == 0 )); then
       confirm "Drop anyway (changes will be lost)?" || exit 0
+    fi
+  fi
+
+  # Safety: unpushed commits (non-skippable gate — --yes does not bypass; --force overrides)
+  if [[ -n "$base_branch" ]]; then
+    local ahead_count
+    ahead_count=$(git rev-list --count "${base_branch}..HEAD" 2>/dev/null || echo 0)
+    if (( ahead_count > 0 )); then
+      warn "${ahead_count} unpushed commit(s) on this branch:"
+      git log --oneline "${base_branch}..HEAD" >&2
+      if (( force == 0 )); then
+        confirm "Drop ${ahead_count} unpushed commit(s)? (use --force to skip)" \
+          || { info "Aborted."; exit 0; }
+      fi
+    fi
+  else
+    warn "Could not determine base branch — assuming commits may be unpushed."
+    if (( force == 0 )); then
+      confirm "Proceed with drop anyway?" || { info "Aborted."; exit 0; }
     fi
   fi
 
@@ -1107,17 +1180,18 @@ cmd_status() {
 }
 
 # Shared cleanup: remove worktree dir, delete branch, kill tmux session
-# Args: repo_root branch main_wt project slug [force] [project_root]
+# Args: repo_root branch main_wt project slug delete_mode [project_root]
+# delete_mode: "merged" → git branch -d (safe); "force" → git branch -D
 _cleanup_worktree() {
   local repo_root="$1" branch="$2" main_wt="$3" project="$4" slug="$5"
-  local force="${6:-}" project_root="${7:-}"
+  local delete_mode="${6:-force}" project_root="${7:-}"
 
   info "Removing worktree..."
   git -C "$main_wt" worktree remove "$repo_root" --force >&2 \
     || warn "Could not auto-remove worktree dir. Run: rm -rf ${repo_root}"
 
   info "Deleting branch ${branch}..."
-  if [[ -n "$force" ]]; then
+  if [[ "$delete_mode" == "force" ]]; then
     git -C "$main_wt" branch -D "$branch" >&2 \
       || warn "Could not force-delete branch ${branch}"
   else
@@ -1221,8 +1295,74 @@ cmd_list() {
   if (( found == 0 )); then info "No active worktrees found."; fi
 }
 
+# Infer and write a .wt-meta for a worktree, merging with any existing fields.
+# Args: project_root wt_path [existing_meta_path]
+# Existing non-empty fields take precedence over inferred values.
+_repair_wt_meta() {
+  local project_root="$1" wt_path="$2" existing_meta="${3:-/dev/null}"
+
+  local r_branch r_slug r_project r_project_root r_created r_description r_base
+
+  r_branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  r_slug=$(basename "$wt_path")
+  r_project=$(basename "$project_root")
+  r_project_root="$project_root"
+  r_description="${r_slug//-/ }"
+  r_created="unknown"
+
+  if [[ -n "$r_branch" ]]; then
+    local _date
+    _date=$(git -C "$project_root" reflog show "$r_branch" --format='%ci' 2>/dev/null \
+      | head -1 | cut -d' ' -f1 || echo "")
+    if [[ -n "$_date" ]]; then r_created="${_date}T00:00:00"; fi
+  fi
+
+  # Infer base_branch: non-wt branch with fewest commits ahead of HEAD
+  r_base=""
+  local _best_count=999999
+  while IFS= read -r _b; do
+    if [[ "$_b" == "wt/"* || "$_b" == "$r_branch" ]]; then continue; fi
+    local _cnt
+    _cnt=$(git -C "$wt_path" rev-list --count "${_b}..HEAD" 2>/dev/null || echo 999999)
+    if (( _cnt < _best_count )); then _best_count=$_cnt; r_base="$_b"; fi
+  done < <(git -C "$project_root" branch 2>/dev/null | sed 's/^[* ]*//')
+  [[ -z "$r_base" ]] && r_base="main"
+
+  # Override inferred values with any existing non-empty field values
+  local _ev
+  _ev=$(grep "^base_branch=" "$existing_meta" 2>/dev/null | head -1 | cut -d= -f2-)
+  [[ -n "$_ev" ]] && r_base="$_ev"
+  _ev=$(grep "^branch=" "$existing_meta" 2>/dev/null | head -1 | cut -d= -f2-)
+  [[ -n "$_ev" ]] && r_branch="$_ev"
+  _ev=$(grep "^slug=" "$existing_meta" 2>/dev/null | head -1 | cut -d= -f2-)
+  [[ -n "$_ev" ]] && r_slug="$_ev"
+  _ev=$(grep "^project=" "$existing_meta" 2>/dev/null | head -1 | cut -d= -f2-)
+  [[ -n "$_ev" ]] && r_project="$_ev"
+  _ev=$(grep "^project_root=" "$existing_meta" 2>/dev/null | head -1 | cut -d= -f2-)
+  [[ -n "$_ev" ]] && r_project_root="$_ev"
+  _ev=$(grep "^created=" "$existing_meta" 2>/dev/null | head -1 | cut -d= -f2-)
+  [[ -n "$_ev" ]] && r_created="$_ev"
+  _ev=$(grep "^description=" "$existing_meta" 2>/dev/null | head -1 | cut -d= -f2-)
+  [[ -n "$_ev" ]] && r_description="$_ev"
+
+  cat > "${wt_path}/${META_FILE}" <<EOF
+base_branch=${r_base}
+created=${r_created}
+description=${r_description}
+project=${r_project}
+project_root=${r_project_root}
+slug=${r_slug}
+branch=${r_branch}
+EOF
+}
+
 # wt doctor — scan real repos for state drift and offer to fix
 cmd_doctor() {
+  local dry_run=0
+  for arg in "$@"; do
+    case "$arg" in --dry-run) dry_run=1 ;; esac
+  done
+
   local any_project=0
   local total_issues=0
 
@@ -1235,7 +1375,9 @@ cmd_doctor() {
     # ── Stale registry check ─────────────────────────────────────────────────
     if [[ ! -d "$project_root" ]]; then
       output+="  ${RED}✗${RESET} Stale registry entry: ${BOLD}${project_root}${RESET} (not found on disk)\n"
-      if confirm "    Remove ${project_root} from registry?"; then
+      if (( dry_run == 1 )); then
+        output+="  ${CYAN}→${RESET} [dry-run] Would remove stale registry entry: ${project_root}\n"
+      elif confirm "    Remove ${project_root} from registry?"; then
         _unregister_project "$project_root"
         output+="  ${GREEN}✓${RESET} Removed stale registry entry\n"
       fi
@@ -1263,7 +1405,9 @@ cmd_doctor() {
         local wt_dir="${project_root}/${WORKTREES_DIR}/${slug}"
         if [[ ! -d "$wt_dir" ]]; then
           output+="  ${RED}✗${RESET} Orphaned branch ${BOLD}${branch}${RESET} (no matching worktree dir)\n"
-          if confirm "    Delete branch ${branch}?"; then
+          if (( dry_run == 1 )); then
+            output+="  ${CYAN}→${RESET} [dry-run] Would delete branch ${branch}\n"
+          elif confirm "    Delete branch ${branch}?"; then
             git -C "$project_root" branch -D "$branch" >&2 \
               && output+="  ${GREEN}✓${RESET} Deleted ${branch}\n" \
               || output+="  ${YELLOW}⚠${RESET} Could not delete ${branch}\n"
@@ -1282,7 +1426,9 @@ cmd_doctor() {
           if ! git -C "$project_root" worktree list --porcelain 2>/dev/null \
               | grep -qF "worktree ${wt_dir%/}"; then
             output+="  ${RED}✗${RESET} Orphaned worktree dir ${BOLD}.worktrees/${slug}${RESET} (not a registered git worktree)\n"
-            if confirm "    Remove dir .worktrees/${slug}?"; then
+            if (( dry_run == 1 )); then
+              output+="  ${CYAN}→${RESET} [dry-run] Would remove .worktrees/${slug}\n"
+            elif confirm "    Remove dir .worktrees/${slug}?"; then
               rm -rf "$wt_dir" \
                 && output+="  ${GREEN}✓${RESET} Removed .worktrees/${slug}\n" \
                 || output+="  ${YELLOW}⚠${RESET} Could not remove .worktrees/${slug}\n"
@@ -1291,6 +1437,28 @@ cmd_doctor() {
           fi
         done
       fi
+
+      # ── Check 2b: Missing .wt-meta in registered worktrees ──────────────────
+      # A registered git worktree exists but has no .wt-meta file.
+      while IFS= read -r _wt_line <&5; do
+        if [[ "$_wt_line" == worktree\ * ]]; then
+          local _wt_path="${_wt_line#worktree }"
+          [[ "$_wt_path" == "$project_root" ]] && continue
+          [[ ! -d "$_wt_path" ]] && continue  # stale — handled by check 6
+          if [[ ! -f "${_wt_path}/${META_FILE}" ]]; then
+            local _wt_slug
+            _wt_slug=$(basename "$_wt_path")
+            output+="  ${RED}✗${RESET} Missing ${META_FILE} in ${BOLD}.worktrees/${_wt_slug}${RESET}\n"
+            if (( dry_run == 1 )); then
+              output+="  ${CYAN}→${RESET} [dry-run] Would repair ${META_FILE} for .worktrees/${_wt_slug}\n"
+            elif confirm "    Repair ${META_FILE} for .worktrees/${_wt_slug}?"; then
+              _repair_wt_meta "$project_root" "$_wt_path" "/dev/null" || true
+              output+="  ${GREEN}✓${RESET} Repaired ${META_FILE} for .worktrees/${_wt_slug}\n"
+            fi
+            (( issues++ )) || true
+          fi
+        fi
+      done 5< <(git -C "$project_root" worktree list --porcelain 2>/dev/null)
 
       # ── Check 3: Corrupt .wt-meta ────────────────────────────────────────────
       if [[ -d "${project_root}/${WORKTREES_DIR}" ]]; then
@@ -1304,7 +1472,16 @@ cmd_doctor() {
             local wt_name
             wt_name=$(basename "$(dirname "$meta_file")")
             output+="  ${RED}✗${RESET} Corrupt ${META_FILE} in ${BOLD}.worktrees/${wt_name}${RESET} (missing: base_branch/branch/slug)\n"
-            output+="    Fix manually: edit ${meta_file}\n"
+            local _corrupt_wt_path
+            _corrupt_wt_path=$(dirname "$meta_file")
+            if (( dry_run == 1 )); then
+              output+="  ${CYAN}→${RESET} [dry-run] Would repair ${META_FILE} for .worktrees/${wt_name}\n"
+            elif confirm "    Repair ${META_FILE} for .worktrees/${wt_name}?"; then
+              _repair_wt_meta "$project_root" "$_corrupt_wt_path" "$meta_file" || true
+              output+="  ${GREEN}✓${RESET} Repaired ${META_FILE} for .worktrees/${wt_name}\n"
+            else
+              output+="    Fix manually: edit ${meta_file}\n"
+            fi
             (( issues++ )) || true
           fi
         done
@@ -1314,7 +1491,9 @@ cmd_doctor() {
       local exclude_file="${project_root}/.git/info/exclude"
       if ! grep -qxF ".worktrees/" "$exclude_file" 2>/dev/null; then
         output+="  ${RED}✗${RESET} ${BOLD}.worktrees/${RESET} missing from .git/info/exclude\n"
-        if confirm "    Add .worktrees/ to info/exclude?"; then
+        if (( dry_run == 1 )); then
+          output+="  ${CYAN}→${RESET} [dry-run] Would add .worktrees/ to info/exclude\n"
+        elif confirm "    Add .worktrees/ to info/exclude?"; then
           mkdir -p "${project_root}/.git/info"
           echo ".worktrees/" >> "$exclude_file" \
             && output+="  ${GREEN}✓${RESET} Added .worktrees/ to info/exclude\n" \
@@ -1326,7 +1505,9 @@ cmd_doctor() {
       # ── Check 5: Missing .wt-meta in info/exclude ───────────────────────────
       if ! grep -qxF ".wt-meta" "$exclude_file" 2>/dev/null; then
         output+="  ${RED}✗${RESET} ${BOLD}.wt-meta${RESET} missing from .git/info/exclude\n"
-        if confirm "    Add .wt-meta to info/exclude?"; then
+        if (( dry_run == 1 )); then
+          output+="  ${CYAN}→${RESET} [dry-run] Would add .wt-meta to info/exclude\n"
+        elif confirm "    Add .wt-meta to info/exclude?"; then
           mkdir -p "${project_root}/.git/info"
           echo ".wt-meta" >> "$exclude_file" \
             && output+="  ${GREEN}✓${RESET} Added .wt-meta to info/exclude\n" \
@@ -1350,7 +1531,9 @@ cmd_doctor() {
         for sp in "${stale_wts[@]}"; do
           output+="    ${sp}\n"
         done
-        if confirm "    Run 'git worktree prune' and delete stale wt/* branches?"; then
+        if (( dry_run == 1 )); then
+          output+="  ${CYAN}→${RESET} [dry-run] Would prune stale registrations\n"
+        elif confirm "    Run 'git worktree prune' and delete stale wt/* branches?"; then
           git -C "$project_root" worktree prune >&2
           for sp in "${stale_wts[@]}"; do
             local stale_slug

@@ -83,6 +83,9 @@ wt list
 # (run from inside the worktree)
 wt finish
 
+# Preview what finish would do without making changes
+wt finish --dry-run
+
 # Keep a long-lived worktree current with the base branch
 wt sync
 
@@ -95,6 +98,9 @@ wt retarget                # interactive picker
 
 # Abandon work without merging
 wt abandon
+
+# Drop even if there are unpushed commits (non-skippable gate)
+wt drop --force --yes
 
 # Push branch and open a GitHub PR (requires gh CLI)
 wt pr
@@ -130,13 +136,15 @@ Creates a new git worktree with an auto-named branch.
 - By default, skips all dependency handling — worktree creation is instant with no prompts
 - `--with-deps`: opt into dependency handling. For JS projects with `node_modules/` in the main checkout, copies it using copy-on-write cloning (`cp -c` on APFS, `--reflink=auto` on btrfs/XFS) — zero extra disk space on supported filesystems, 10–30× faster than `npm install` on ext4. Otherwise, detects the package manager (pnpm/yarn/npm/uv/poetry/pip) and prompts to install.
 
-### `wt finish [--yes|-y] [--force]`
+### `wt finish [--yes|-y] [--force] [--dry-run]`
 
 Integrates the worktree back into its base branch and cleans up.
 
-Pass `--yes` or `-y` to skip all confirmation prompts (useful when running from scripts or Claude Code).
+Pass `--yes` or `-y` to skip routine confirmation prompts (useful when running from scripts or Claude Code).
 
-Pass `--force` to bypass the PR-open guard and finish locally even when a GitHub PR is still open.
+Pass `--force` to override non-skippable safety gates (untracked files, open PR).
+
+Pass `--dry-run` to preview what would happen without making any changes. No stdout output (preserves shell wrapper contract).
 
 **Strategy (auto-detected):**
 - **No merge commits** (clean history): rebases onto base and fast-forwards → linear history
@@ -144,16 +152,16 @@ Pass `--force` to bypass the PR-open guard and finish locally even when a GitHub
 
 **Safety checks (in order):**
 1. Verifies you're in a worktree (not the main checkout) — errors if not
-2. Aborts if there are tracked uncommitted changes — **not** skipped by `--yes`
-3. Warns if there are untracked files (they will be permanently deleted) — auto-accepted by `--yes`
+2. Aborts if there are tracked uncommitted changes — not skipped by `--yes` or `--force`
+3. **Non-skippable:** warns if there are untracked files (they will be permanently deleted) — prompts even with `--yes`; only `--force` bypasses
 4. Warns if an editor is still running in this worktree's tmux session (requires `claude_running_in_session()` override; no-op by default) — skipped by `--yes`
 5. If `gh` is installed: checks for a GitHub PR on the current branch
    - **PR merged**: confirms cleanup (skipped with `--yes`), removes worktree + branch without rebasing, returns
    - **PR open**: errors unless `--force` is passed; with `--force`, proceeds to local integration flow
    - **No PR / gh unavailable**: continues with local integration flow below
 6. Detects strategy (rebase vs squash) based on merge commits in `<base>..HEAD`
-   - **Squash path**: confirms `Squash-merge wt/<slug> into <base>?` — skipped by `--yes`. Requires base to be an ancestor of HEAD (i.e. `wt update` was run). If base has new commits since the last `wt update`, errors with a prompt to run `wt update` again.
-   - **Rebase path**: confirms `Rebase wt/<slug> onto <base> and fast-forward?` — skipped by `--yes`. Fetches remote base (best-effort). Rebases — aborts if there are conflicts.
+   - **Squash path**: confirms `Squash-merge wt/<slug> into <base>?` — skipped by `--yes` and `--dry-run`. Requires base to be an ancestor of HEAD (i.e. `wt update` was run). If base has new commits since the last `wt update`, errors with a prompt to run `wt update` again.
+   - **Rebase path**: confirms `Rebase wt/<slug> onto <base> and fast-forward?` — skipped by `--yes` and `--dry-run`. Fetches remote base (best-effort). Rebases — SIGINT-trapped; aborts cleanly on Ctrl+C; aborts and prints manual instructions on conflict.
 7. Fast-forwards base branch to the integrated tip (checks all worktrees, not just main)
 8. Removes worktree directory and branch
 9. Kills tmux session `<project>/<slug>` if it exists (switches to project main session first if you're running from inside it)
@@ -213,17 +221,22 @@ wt retarget
 
 After retargeting, run `wt sync` if you want to rebase the working branch onto the new base immediately.
 
-### `wt abandon [--yes|-y]`
+### `wt abandon [--yes|-y] [--force] [--dry-run]`
 
 Abandons a worktree without merging — for dead-end experiments.
 
-Pass `--yes` or `-y` to skip all confirmation prompts.
+Pass `--yes` or `-y` to skip routine confirmation prompts.
+
+Pass `--force` to override the non-skippable unpushed-commits safety gate.
+
+Pass `--dry-run` to preview what would happen without making any changes.
 
 **Safety checks (in order):**
 1. Verifies you're in a worktree
 2. Warns if there are uncommitted changes — asks to confirm before proceeding — skipped by `--yes`
-3. Warns if an editor is still running in this session (requires `claude_running_in_session()` override) — skipped by `--yes`
-4. Final confirmation: `Drop wt/<slug>? (no merge) [y/N]` — skipped by `--yes`
+3. **Non-skippable:** warns if the branch has commits not in the base branch (unpushed work that will be lost) — prompts even with `--yes`; only `--force` bypasses
+4. Warns if an editor is still running in this session (requires `claude_running_in_session()` override) — skipped by `--yes`
+5. Final confirmation: `Drop wt/<slug>? (no merge) [y/N]` — skipped by `--yes`
 
 **On success:**
 - Worktree directory removed
@@ -266,15 +279,19 @@ myapp
   wt/fix-login-bug          0 ahead  2 dirty     1d ago  "fix the login bug"
 ```
 
-### `wt doctor`
+### `wt doctor [--dry-run]`
 
 Scans for and interactively fixes:
 
 - Orphaned `wt/*` branches (no matching worktree dir)
 - Orphaned `.worktrees/` directories (not registered as git worktrees)
-- Corrupt `.wt-meta` files
+- Missing `.wt-meta` files — offers to repair by inferring values from git state
+- Corrupt `.wt-meta` files (missing required fields) — offers to repair
 - Missing `.git/info/exclude` entries
 - Stale git worktree registrations
+- Stale registry entries (projects that no longer exist on disk)
+
+Pass `--dry-run` to report all issues without fixing anything.
 
 ## tmux integration (optional)
 
