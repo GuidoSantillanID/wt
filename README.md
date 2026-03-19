@@ -100,7 +100,7 @@ wt retarget                # interactive picker
 wt abandon
 
 # Drop even if there are unpushed commits (non-skippable gate)
-wt drop --force --yes
+wt abandon --force --yes
 
 # Push branch and open a GitHub PR (requires gh CLI)
 wt pr
