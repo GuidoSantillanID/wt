@@ -133,8 +133,8 @@ Creates a new git worktree with an auto-named branch.
 - Must be run from inside a git repo (or a worktree of one)
 - If run from inside an existing worktree, creates from the main checkout — the new worktree's base branch is the **main checkout's current branch**, not the branch of the worktree you're in. `wt` prints a message showing which branch that is so you can verify.
 - Registers the project automatically on first use
-- By default, skips all dependency handling — worktree creation is instant with no prompts
-- `--with-deps`: opt into dependency handling. For JS projects with `node_modules/` in the main checkout, copies it using copy-on-write cloning (`cp -c` on APFS, `--reflink=auto` on btrfs/XFS) — zero extra disk space on supported filesystems, 10–30× faster than `npm install` on ext4. Otherwise, detects the package manager (pnpm/yarn/npm/uv/poetry/pip) and prompts to install.
+- By default, skips dependency installation — worktree creation is instant with no prompts. If a package manager is detected (pnpm/yarn/npm/uv/poetry/pip), prints a hint reminding you about `--with-deps`.
+- `--with-deps`: opt into dependency handling. For JS projects with `node_modules/` in the main checkout, copies it using copy-on-write cloning (`cp -c` on APFS, `--reflink=auto` on btrfs/XFS) — zero extra disk space on supported filesystems, 10–30× faster than `npm install` on ext4. Otherwise, detects the package manager and prompts to install.
 
 ### `wt finish [--yes|-y] [--force] [--dry-run]`
 

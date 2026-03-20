@@ -397,7 +397,9 @@ EOF
   fi
 
   if (( with_deps == 0 )); then
-    : # skip — no deps handling
+    if [[ -n "$pm" ]]; then
+      info "Detected ${BOLD}${pm}${RESET} — use ${BOLD}--with-deps${RESET} to copy/install dependencies"
+    fi
   elif (( is_js == 1 )) && [[ -d "${project_root}/node_modules" ]]; then
     info "Copying node_modules from main checkout..."
     copy_node_modules "${project_root}/node_modules" "${worktree_path}/node_modules" \

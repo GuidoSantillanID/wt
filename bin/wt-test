@@ -709,7 +709,8 @@ stdout_nf=$(wt new "no flag js" 2>"$_tmp_nf")
 out_nf=$(cat "$_tmp_nf"); rm -f "$_tmp_nf"
 assert_eq             "stdout is worktree path"            "${WT_NF}" "$stdout_nf"
 assert_dir_exists     "worktree created"                   "${WT_NF}"
-assert_not_contains   "no install prompt without flag"     "install"  "$out_nf"
+assert_not_contains   "no interactive install prompt"      "Run '"    "$out_nf"
+assert_contains       "dep hint shown"                     "Detected" "$out_nf"
 assert_dir_not_exists "node_modules not copied without flag" "${WT_NF}/node_modules"
 # Cleanup
 git -C "$REPO" worktree remove "${WT_NF}" --force 2>/dev/null || true
@@ -746,6 +747,49 @@ assert_eq "flag before desc works" "$WT_FP" "$stdout_fp"
 git -C "$REPO" worktree remove "${WT_FP}" --force 2>/dev/null || true
 git -C "$REPO" branch -D "wt/flag-pos-test" 2>/dev/null || true
 rm -rf "${REPO}/node_modules"
+
+# ── dep hint (no --with-deps) ─────────────────────────────────────────────────
+section "dep hint — pnpm project shows hint without --with-deps"
+# Add pnpm-lock.yaml to dev branch so pm is detected as pnpm
+echo "lockfileVersion: '6.0'" > "${REPO}/pnpm-lock.yaml"
+git -C "$REPO" add pnpm-lock.yaml
+git -C "$REPO" commit -q -m "add pnpm-lock.yaml"
+cd "$REPO"
+WT_DH="${REPO}/.worktrees/hint-pnpm-test"
+_tmp_dh=$(mktemp)
+stdout_dh=$(wt new "hint pnpm test" 2>"$_tmp_dh")
+out_dh=$(cat "$_tmp_dh"); rm -f "$_tmp_dh"
+assert_eq        "stdout is worktree path"    "${WT_DH}" "$stdout_dh"
+assert_contains  "dep hint shown for pnpm"    "Detected pnpm" "$out_dh"
+# Cleanup
+git -C "$REPO" worktree remove "${WT_DH}" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/hint-pnpm-test" 2>/dev/null || true
+
+section "dep hint — --with-deps: no hint shown"
+cd "$REPO"
+WT_HD="${REPO}/.worktrees/hint-with-deps"
+_tmp_hd=$(mktemp)
+stdout_hd=$(printf "n\n" | wt new --with-deps "hint with deps" 2>"$_tmp_hd")
+out_hd=$(cat "$_tmp_hd"); rm -f "$_tmp_hd"
+assert_not_contains "no hint shown with --with-deps" "Detected pnpm" "$out_hd"
+git -C "$REPO" worktree remove "${WT_HD}" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/hint-with-deps" 2>/dev/null || true
+
+section "dep hint — no PM: no hint"
+# Remove pnpm-lock.yaml and package.json from dev; checkout main (no PM files)
+git -C "$REPO" rm -q pnpm-lock.yaml
+git -C "$REPO" commit -q -m "remove pnpm-lock.yaml"
+git -C "$REPO" checkout -q main
+cd "$REPO"
+WT_NH="${REPO}/.worktrees/hint-no-pm"
+_tmp_nh=$(mktemp)
+stdout_nh=$(wt new "hint no pm" 2>"$_tmp_nh")
+out_nh=$(cat "$_tmp_nh"); rm -f "$_tmp_nh"
+assert_not_contains "no hint without PM" "Detected" "$out_nh"
+# Cleanup
+git -C "$REPO" worktree remove "${WT_NH}" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/hint-no-pm" 2>/dev/null || true
+git -C "$REPO" checkout -q dev
 
 # ─── wt status ───────────────────────────────────────────────────────────────
 

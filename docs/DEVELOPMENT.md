@@ -169,7 +169,7 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 11. Write .wt-meta
 12. Add ".wt-meta" to GIT_COMMON_DIR/info/exclude (if not present)
 13. Detect package manager: uv.lock → uv, poetry.lock → poetry, requirements.txt/pyproject.toml → pip; package.json + pnpm-lock.yaml → pnpm, yarn.lock → yarn, else → npm
-14. If package manager detected: warn + prompt to install
+14. If --with-deps: copy node_modules (JS+CoW) or warn + prompt to install; else if PM detected: show hint "Detected <pm> — use --with-deps to copy/install dependencies"
 15. Print worktree_path to stdout (shell wrapper uses this to cd)
 ```
 
