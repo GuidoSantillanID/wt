@@ -7,12 +7,11 @@
 # parallel development workflows.
 #
 # COMMANDS
-#   wt new [--with-deps] "<description>"        Create a worktree with auto-named branch
-#   wt finish [--yes|-y] [--force] [--dry-run]  Integrate worktree into base (rebase or squash), clean up
-#   wt sync                                     Rebase onto latest base branch (from origin)
-#   wt update                                   Merge local base branch into worktree (LLM-friendly)
+#   wt new "<description>"                      Create a worktree with auto-named branch
+#   wt finish [--yes|-y] [--force]              Integrate worktree into base (rebase or squash), clean up
+#   wt sync                                     Merge local base branch into worktree (LLM-friendly)
 #   wt retarget [branch]                        Change this worktree's base branch
-#   wt abandon [--yes|-y] [--force] [--dry-run] Abandon worktree without merging, clean up
+#   wt abandon [--yes|-y] [--force]             Abandon worktree without merging, clean up
 #   wt pr [--draft] [--yes|-y]                  Push branch and open a GitHub PR (requires gh)
 #   wt status                                   Show current worktree info
 #   wt list                                     Show all worktrees across projects
@@ -22,8 +21,8 @@
 # FLAGS
 #   --yes / -y   Skip routine confirmation prompts (non-skippable safety gates still prompt)
 #   --force      Override non-skippable safety gates (untracked files in finish,
-#                unpushed commits in abandon, open PR in finish)
-#   --dry-run    Show what would happen without making any changes (finish, abandon, doctor)
+#                unpushed commits in abandon)
+#   --dry-run    Show what would happen without making any changes (doctor only)
 #
 # INSTALLATION
 #   1. Run ./install.sh  (copies bin/wt to ~/.local/bin/wt)
@@ -202,33 +201,26 @@ cmd_help() {
 wt — Git Worktree Lifecycle Tool
 
 USAGE
-  wt new [--with-deps] "<description>"   Create a worktree with auto-named branch
-  wt finish [--yes|-y] [--force] [--dry-run]  Integrate worktree into base (rebase or squash), clean up
-  wt sync                                     Rebase onto latest base branch (from origin)
-  wt update                                   Merge local base branch into worktree (LLM-friendly)
+  wt new "<description>"                      Create a worktree with auto-named branch
+  wt finish [--yes|-y] [--force]              Integrate worktree into base (rebase or squash), clean up
+  wt sync                                     Merge local base branch into worktree (LLM-friendly)
   wt retarget [branch]                        Change this worktree's base branch
-  wt abandon [--yes|-y] [--force] [--dry-run] Abandon worktree without merging, clean up
+  wt abandon [--yes|-y] [--force]             Abandon worktree without merging, clean up
   wt pr [--draft] [--yes|-y]                  Push branch and open a GitHub PR (requires gh)
   wt status                                   Show current worktree info
   wt list                                     Show all active worktrees across projects
   wt doctor [--dry-run]                       Check for orphaned branches/dirs, fix interactively
-  wt help                                Show this help
+  wt help                                     Show this help
 
 EXAMPLES
   # From inside a project dir:
   wt new "fix the sidebar overflow bug"
 
-  # Copy node_modules from main checkout (zero-cost on APFS/btrfs):
-  wt new --with-deps "quick fix for header"
-
   # Integrate worktree into base and clean up (run from inside a worktree):
   wt finish
 
-  # Rebase worktree onto latest base (run from inside a worktree):
+  # Merge local base into worktree (keeps worktree up to date):
   wt sync
-
-  # Merge local base into worktree (for LLM conflict resolution):
-  wt update
 
   # Abandon a dead-end worktree without merging:
   wt abandon
@@ -253,38 +245,25 @@ NOTES
   • After `wt finish`, your shell cd's back to the main worktree
   • Pass --yes / -y to wt finish, wt abandon, or wt pr to skip confirmation prompts
   • Pass --force to wt finish or wt abandon to override non-skippable safety gates
-  • Use `wt sync` to rebase long-lived worktrees onto the latest base branch
-  • Use `wt update` when conflicts exist — LLM analyses each conflict, resolves clear cases autonomously, asks you for guidance when the resolution requires product or business knowledge
+  • `wt sync` merges local base into the worktree — on conflict, shows LLM-friendly context
   • `wt pr` requires the GitHub CLI (gh) — https://cli.github.com
-  • `wt pr` rebases before pushing when the branch is clean; skips rebase when merge commits are present (from wt update); worktree stays alive after
-  • After merging the PR on GitHub, run `wt finish` to clean up the worktree
-  • `wt finish` detects a merged PR (via gh) and skips local integration
-  • `wt finish` auto-detects merge commits from `wt update` and uses squash instead of rebase
+  • `wt pr` rebases before pushing when the branch is clean; skips rebase when merge commits are present (from wt sync)
+  • After merging a PR on GitHub, run `wt abandon` to clean up the worktree
+  • `wt finish` auto-detects merge commits from `wt sync` and uses squash instead of rebase
   • Projects are tracked in ${XDG_CONFIG_HOME:-~/.config}/wt/projects (one path per line)
   • Override registry path: export WT_REGISTRY=/path/to/registry
   • Inside tmux, cleanup commands (finish/abandon) show a reminder to close the current window
 HELP
 }
 
-copy_node_modules() {
-  local src="$1" dest="$2"
-  if [[ "$(uname)" == "Darwin" ]]; then
-    cp -c -R "$src" "$dest" 2>/dev/null && return 0
-  fi
-  cp --reflink=auto -R "$src" "$dest" 2>/dev/null && return 0
-  cp -R "$src" "$dest"
-}
-
-# wt new [--with-deps] "<description>"
+# wt new "<description>"
 cmd_new() {
   local description=""
-  local with_deps=0
 
   # Extract flags
   local args=()
   for arg in "$@"; do
     case "$arg" in
-      --with-deps) with_deps=1 ;;
       -*) error "Unknown flag: $arg" ;;
       *) args+=("$arg") ;;
     esac
@@ -292,9 +271,9 @@ cmd_new() {
   set -- "${args[@]}"
 
   case $# in
-    0) error "Usage: wt new [--with-deps] \"<description>\"" ;;
+    0) error "Usage: wt new \"<description>\"" ;;
     1) description="$1" ;;
-    *) error "Usage: wt new [--with-deps] \"<description>\"" ;;
+    *) error "Usage: wt new \"<description>\"" ;;
   esac
 
   [[ -z "$description" ]] && error "Description cannot be empty"
@@ -380,40 +359,7 @@ EOF
   fi
 
   success "Worktree created: ${worktree_path}"
-
-  # Detect package manager and prompt for dep install
-  local pm=""
-  local is_js=0
-  if [[ -f "${worktree_path}/package.json" ]]; then
-    is_js=1
-    if   [[ -f "${worktree_path}/pnpm-lock.yaml" ]]; then pm="pnpm"
-    elif [[ -f "${worktree_path}/yarn.lock"       ]]; then pm="yarn"
-    else                                                   pm="npm"
-    fi
-  elif [[ -f "${worktree_path}/uv.lock"          ]]; then pm="uv"
-  elif [[ -f "${worktree_path}/poetry.lock"       ]]; then pm="poetry"
-  elif [[ -f "${worktree_path}/requirements.txt"  ]]; then pm="pip"
-  elif [[ -f "${worktree_path}/pyproject.toml"    ]]; then pm="pip"
-  fi
-
-  if (( with_deps == 0 )); then
-    if [[ -n "$pm" ]]; then
-      info "Detected ${BOLD}${pm}${RESET} — use ${BOLD}--with-deps${RESET} to copy/install dependencies"
-    fi
-  elif (( is_js == 1 )) && [[ -d "${project_root}/node_modules" ]]; then
-    info "Copying node_modules from main checkout..."
-    copy_node_modules "${project_root}/node_modules" "${worktree_path}/node_modules" \
-      && success "node_modules copied (CoW if supported by filesystem)" \
-      || warn "node_modules copy failed — run '${pm} install' manually."
-  elif [[ -n "$pm" ]]; then
-    warn "Worktrees don't share node_modules/venv. You'll need: ${BOLD}${pm} install${RESET}"
-    if confirm "Run '${pm} install' now?"; then
-      info "Running ${pm} install..."
-      (cd "$worktree_path" && "$pm" install) \
-        || warn "${pm} install failed — run it manually."
-      success "Dependencies installed"
-    fi
-  fi
+  info "Worktrees share git history but not installed dependencies — run your package manager if needed."
 
   # Return path on stdout for shell wrapper to cd into
   echo "$worktree_path"
@@ -472,7 +418,7 @@ cmd_retarget() {
     && rm -f "${meta_file}.bak"
 
   success "Base branch changed: ${BOLD}${base_branch}${RESET} → ${BOLD}${new_base}${RESET}"
-  info "Run 'wt sync' to rebase onto the new base, or 'wt finish' when done."
+  info "Run 'wt sync' to merge the new base, or 'wt finish' when done."
 }
 
 # Fetch origin/<base_branch> and rebase current branch onto it (fall back to local).
@@ -612,12 +558,11 @@ _pick_base_branch() {
 
 # wt finish — rebase worktree onto base, fast-forward, clean up
 cmd_finish() {
-  local auto_yes=0 force=0 dry_run=0
+  local auto_yes=0 force=0
   for arg in "$@"; do
     case "$arg" in
       --yes|-y)  auto_yes=1 ;;
       --force)   force=1 ;;
-      --dry-run) dry_run=1 ;;
     esac
   done
 
@@ -654,10 +599,9 @@ cmd_finish() {
 
   # Safety: untracked files (git worktree remove --force will permanently delete them)
   # Non-skippable: --yes does not bypass; only --force overrides.
-  # Skipped in --dry-run: show warning in plan output instead of prompting.
   if git status --porcelain | grep -q '^??'; then
     warn "Untracked files in this worktree will be permanently deleted."
-    if (( force == 0 )) && (( dry_run == 0 )); then
+    if (( force == 0 )); then
       confirm "Continue? Untracked files will be lost." || { info "Aborted."; exit 0; }
     fi
   fi
@@ -666,30 +610,7 @@ cmd_finish() {
   main_wt=$(get_main_worktree)
   [[ -z "$main_wt" ]] && error "Could not determine main worktree path"
 
-  # ── PR-flow detection ───────────────────────────────────────────────────────
-  # If gh is available and a PR exists for this branch, take the PR cleanup path.
-  if command -v gh &>/dev/null; then
-    local pr_state
-    pr_state=$(gh pr view --json state --jq '.state' 2>/dev/null || echo "")
-    if [[ "$pr_state" == "MERGED" ]]; then
-      if (( auto_yes == 0 )); then
-        confirm "PR merged. Clean up worktree?" \
-          || { info "Aborted."; exit 0; }
-      fi
-      _cleanup_worktree "$repo_root" "$branch" "$main_wt" "$project" "$slug" "force" "$project_root"
-      success "Done! PR merged, worktree cleaned up."
-      echo "$main_wt"
-      return 0
-    elif [[ "$pr_state" == "OPEN" ]]; then
-      if (( force == 0 )); then
-        error "PR is still open. Merge or close it on GitHub first, or use --force to finish locally."
-      fi
-      warn "PR is still open — proceeding with local rebase+finish (--force)."
-    fi
-    # CLOSED (not merged), empty (no PR), or gh call failed → fall through to local flow
-  fi
-
-  # Detect merge commits (created by wt update) to choose strategy.
+  # Detect merge commits (created by wt sync) to choose strategy.
   # Merge commits present → squash path. Clean history → rebase path.
   local has_merges use_squash
   has_merges=$(git rev-list --merges "${base_branch}..HEAD" | head -1)
@@ -697,22 +618,16 @@ cmd_finish() {
   [[ -n "$has_merges" ]] && use_squash=1
 
   if (( use_squash )); then
-    # Pre-flight: base_branch must be an ancestor of HEAD (i.e. wt update was run).
+    # Pre-flight: base_branch must be an ancestor of HEAD (i.e. wt sync was run).
     # If it's not, there are new base commits the worktree hasn't merged yet.
     if ! git merge-base --is-ancestor "$base_branch" HEAD 2>/dev/null; then
       warn "Base branch has commits not yet in this worktree."
-      echo -e "  Run 'wt update' first, then retry 'wt finish'." >&2
+      echo -e "  Run 'wt sync' first, then retry 'wt finish'." >&2
       exit 1
     fi
-    if (( auto_yes == 0 )) && (( dry_run == 0 )); then
+    if (( auto_yes == 0 )); then
       confirm "Squash-merge ${BOLD}${branch}${RESET} into ${BOLD}${base_branch}${RESET}?" \
         || { info "Aborted."; exit 0; }
-    fi
-    if (( dry_run == 1 )); then
-      info "[dry-run] Would squash-merge ${branch} into ${base_branch}"
-      info "[dry-run] Would fast-forward ${base_branch}"
-      info "[dry-run] Would remove worktree and delete branch ${branch}"
-      return 0
     fi
     # Create a single squash commit: tree from HEAD (all changes), parent = base_branch only.
     local squash_commit
@@ -726,23 +641,15 @@ cmd_finish() {
   fi
 
   # Rebase path (no merge commits — clean linear history)
-  if (( auto_yes == 0 )) && (( dry_run == 0 )); then
+  if (( auto_yes == 0 )); then
     confirm "Rebase ${BOLD}${branch}${RESET} onto ${BOLD}${base_branch}${RESET} and fast-forward?" \
       || { info "Aborted."; exit 0; }
-  fi
-
-  if (( dry_run == 1 )); then
-    info "[dry-run] Would rebase ${branch} onto ${base_branch}"
-    info "[dry-run] Would fast-forward ${base_branch}"
-    info "[dry-run] Would remove worktree and delete branch ${branch}"
-    return 0
   fi
 
   if ! _rebase_onto_base "$base_branch" "$branch" --prefer-local; then
     git rebase --abort 2>/dev/null || true
     warn "Rebase conflict. Aborted."
-    echo -e "  Option 1: Run 'wt sync' to rebase and resolve conflicts, then retry 'wt finish'." >&2
-    echo -e "  Option 2: Run 'wt update' to merge (instead of rebase) the base branch." >&2
+    echo -e "  Run 'wt sync' to merge the base branch, resolve conflicts, then retry 'wt finish'." >&2
     exit 1
   fi
   trap - INT
@@ -758,48 +665,8 @@ cmd_finish() {
   echo "$main_wt"
 }
 
-# wt sync — rebase worktree branch onto latest base (from origin)
+# wt sync — merge local base branch into worktree (LLM-friendly)
 cmd_sync() {
-  local repo_root
-  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
-    || error "Not inside a git repository"
-
-  [[ -d "${repo_root}/.git" ]] \
-    && error "You are in the main checkout, not a worktree."
-
-  local meta_file="${repo_root}/${META_FILE}"
-  [[ -f "$meta_file" ]] \
-    || error "No ${META_FILE} found. Was this worktree created with 'wt new'?"
-
-  local base_branch description branch
-  base_branch=$(read_meta "$meta_file" "base_branch")
-  description=$(read_meta "$meta_file" "description")
-  branch=$(read_meta "$meta_file" "branch")
-
-  [[ -z "$base_branch" || -z "$branch" ]] \
-    && error "Corrupt .wt-meta — missing required fields"
-
-  info "Worktree: ${BOLD}${branch}${RESET}"
-  info "Description: ${description}"
-  info "Base branch: ${BOLD}${base_branch}${RESET}"
-
-  # Safety: uncommitted changes
-  [[ -n "$(git status --porcelain)" ]] \
-    && error "Uncommitted changes present. Commit or stash before 'wt sync'."
-
-  if ! _rebase_onto_base "$base_branch" "$branch" --prefer-local; then
-    warn "Rebase paused — conflicts detected."
-    echo -e "  Fix conflicts, then:  git add <files> && git rebase --continue" >&2
-    echo -e "  To abort:             git rebase --abort" >&2
-    echo -e "  Alternative:          git rebase --abort && wt update  (merge instead of rebase)" >&2
-    exit 1
-  fi
-
-  success "Synced — ${branch} is up to date with ${base_branch}"
-}
-
-# wt update — merge local base branch into worktree branch
-cmd_update() {
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
     || error "Not inside a git repository"
@@ -835,7 +702,7 @@ cmd_update() {
 
   # Safety: uncommitted tracked changes (untracked files are OK)
   if git status --porcelain | grep -qv '^??'; then
-    error "Uncommitted changes present. Commit or stash before 'wt update'."
+    error "Uncommitted changes present. Commit or stash before 'wt sync'."
   fi
 
   # Check: base branch ref must exist locally
@@ -903,12 +770,11 @@ cmd_update() {
 
 # wt abandon — abandon worktree without merging
 cmd_abandon() {
-  local auto_yes=0 force=0 dry_run=0
+  local auto_yes=0 force=0
   for arg in "$@"; do
     case "$arg" in
       --yes|-y)  auto_yes=1 ;;
       --force)   force=1 ;;
-      --dry-run) dry_run=1 ;;
     esac
   done
 
@@ -936,18 +802,6 @@ cmd_abandon() {
   info "Worktree: ${BOLD}${branch}${RESET}"
   info "Description: ${description}"
   warn "This will DELETE the worktree and branch WITHOUT merging. Work will be lost."
-
-  if (( dry_run == 1 )); then
-    local ahead_dry=0
-    [[ -n "$base_branch" ]] && ahead_dry=$(git rev-list --count "${base_branch}..HEAD" 2>/dev/null || echo 0)
-    local dirty_dry
-    dirty_dry=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-    (( dirty_dry > 0 )) && info "[dry-run] ${dirty_dry} uncommitted file(s) would be lost"
-    (( ahead_dry > 0 )) && info "[dry-run] ${ahead_dry} unpushed commit(s) would be lost"
-    info "[dry-run] Would remove worktree ${repo_root}"
-    info "[dry-run] Would force-delete branch ${branch}"
-    return 0
-  fi
 
   # Safety: uncommitted changes
   if [[ -n "$(git status --porcelain)" ]]; then
@@ -1030,27 +884,12 @@ cmd_pr() {
   [[ -n "$(git status --porcelain)" ]] \
     && error "Uncommitted changes present. Commit or stash before 'wt pr'."
 
-  if (( auto_yes == 0 )); then
-    if confirm "Base branch: ${BOLD}${base_branch}${RESET} — change?"; then
-      local picked pr_had_branches=1
-      picked=$(_pick_base_branch "${branch}" "$base_branch" --no-fallback) || {
-        warn "No remote branches found. Keeping ${base_branch}."
-        pr_had_branches=0
-      }
-      if [[ -n "$picked" ]]; then
-        base_branch="$picked"
-        sed -i.bak "s|^base_branch=.*|base_branch=${base_branch}|" "$meta_file" && rm -f "${meta_file}.bak"
-        success "Base branch changed to ${base_branch}"
-      elif (( pr_had_branches == 1 )); then
-        warn "Invalid choice. Keeping ${base_branch}."
-      fi
-    fi
-  fi
+  info "To change the base branch, run: ${BOLD}wt retarget${RESET}"
 
   git remote get-url origin &>/dev/null \
     || error "No 'origin' remote configured. 'wt pr' requires a remote to push to."
 
-  # Skip rebase when merge commits are present (created by wt update).
+  # Skip rebase when merge commits are present (created by wt sync).
   # Rebasing would re-encounter conflicts already resolved by the merge.
   # Use || true so an unresolvable base_branch ref (remote-only after retarget) defaults to rebase.
   local pr_has_merges
@@ -1533,7 +1372,6 @@ main() {
     new)            cmd_new "$@" ;;
     finish)         cmd_finish "$@" ;;
     sync)           cmd_sync "$@" ;;
-    update)         cmd_update "$@" ;;
     retarget)       cmd_retarget "$@" ;;
     abandon)        cmd_abandon "$@" ;;
     pr)             cmd_pr "$@" ;;

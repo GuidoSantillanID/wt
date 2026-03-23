@@ -16,7 +16,7 @@ The `using-git-worktrees` skill calls `git worktree add <path> -b <branch>` dire
 
 - No `.wt-meta` (base branch, description, project, slug)
 - No project registry entry (`wt list` / `wt doctor` don't see the worktree)
-- No `--with-deps` CoW optimization
+- No dependency handling
 - Branch name chosen ad-hoc, not namespaced under `wt/`
 - Cleanup requires manual `git worktree remove` + `git branch -D`
 
@@ -30,16 +30,16 @@ The pipeline is: `brainstorming` → `writing-plans` → `executing-plans` (call
 | Project registry | ✗ | ✓ |
 | `wt list` / `wt doctor` awareness | ✗ | ✓ |
 | Namespaced `wt/<slug>` branch | ✗ | ✓ |
-| CoW `node_modules` copy | ✗ | `--with-deps` |
+| Dependency hint | ✗ | ✓ (generic reminder) |
 | Rebase/squash finish strategy | ✗ | `wt finish` |
-| Clean `wt drop` (abandon) path | ✗ | ✓ |
+| Clean `wt abandon` (abandon) path | ✗ | ✓ |
 
 ### Command mapping
 
 | Superpowers today | `wt` equivalent |
 |---|---|
 | `git worktree add <path> -b <branch>` | `wt new "<description>"` |
-| `git worktree remove` + `git branch -D` | `wt drop` |
+| `git worktree remove` + `git branch -D` | `wt abandon` |
 | (no equivalent) | `wt finish` (rebase + ff + cleanup) |
 
 ### Implementation sketch
@@ -47,7 +47,7 @@ The pipeline is: `brainstorming` → `writing-plans` → `executing-plans` (call
 A skill file (e.g. `skills/using-wt-worktrees.md`) would replace or extend `using-git-worktrees`. Key differences:
 
 1. **Creation**: call `wt new "<description>"` instead of `git worktree add`. Path is printed to stdout; agent `cd`s into it.
-2. **Finishing**: call `wt finish --yes` (or `wt drop --yes` to abandon). The `--yes` flag skips interactive confirms, safe for agent use.
+2. **Finishing**: call `wt finish --yes` (or `wt abandon --yes` to abandon). The `--yes` flag skips interactive confirms, safe for agent use.
 3. **CLAUDE.md integration**: the skill instructs agents to install `wt` and configure the shell wrapper (`function wt()` in `.zshrc`) as a prerequisite.
 
 **Shell wrapper constraint**: `wt new` prints the worktree path to stdout for the shell wrapper to `cd` into. Agents don't have a shell wrapper — they need to capture stdout and `cd` explicitly:

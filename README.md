@@ -9,8 +9,7 @@ Works great standalone. Works *especially* well with **Claude Code + tmux** — 
 ```
 wt new "add dark mode toggle"     # create worktree + branch, cd into it
 wt finish                         # rebase + fast-forward + clean up
-wt sync                           # rebase onto latest base (keep it current)
-wt update                         # merge local base into worktree (LLM conflict resolution)
+wt sync                           # merge local base into worktree (LLM-friendly)
 wt retarget [branch]              # change which branch this worktree targets
 wt abandon                        # abandon without merging
 wt pr                             # push branch + open GitHub PR
@@ -73,9 +72,6 @@ The registry is a plain text file — one absolute project path per line.
 # Create a worktree from inside a project directory
 wt new "fix the login bug"
 
-# Copy node_modules from main checkout (zero-cost on APFS/btrfs)
-wt new --with-deps "fix the login bug"
-
 # List all active worktrees across all projects
 wt list
 
@@ -83,14 +79,8 @@ wt list
 # (run from inside the worktree)
 wt finish
 
-# Preview what finish would do without making changes
-wt finish --dry-run
-
-# Keep a long-lived worktree current with the base branch
+# Merge local base into worktree (keep it current, LLM-friendly conflict output)
 wt sync
-
-# Merge local base into worktree branch (for LLM-assisted conflict resolution)
-wt update
 
 # Change which branch this worktree will merge into
 wt retarget main           # switch to main
@@ -126,63 +116,43 @@ wt doctor
 
 ## Commands reference
 
-### `wt new [--with-deps] "<description>"`
+### `wt new "<description>"`
 
 Creates a new git worktree with an auto-named branch.
 
 - Must be run from inside a git repo (or a worktree of one)
 - If run from inside an existing worktree, creates from the main checkout — the new worktree's base branch is the **main checkout's current branch**, not the branch of the worktree you're in. `wt` prints a message showing which branch that is so you can verify.
 - Registers the project automatically on first use
-- By default, skips dependency installation — worktree creation is instant with no prompts. If a package manager is detected (pnpm/yarn/npm/uv/poetry/pip), prints a hint reminding you about `--with-deps`.
-- `--with-deps`: opt into dependency handling. For JS projects with `node_modules/` in the main checkout, copies it using copy-on-write cloning (`cp -c` on APFS, `--reflink=auto` on btrfs/XFS) — zero extra disk space on supported filesystems, 10–30× faster than `npm install` on ext4. Otherwise, detects the package manager and prompts to install.
+- Prints a reminder to install dependencies if needed (worktrees don't share `node_modules`/`venv`)
 
-### `wt finish [--yes|-y] [--force] [--dry-run]`
+### `wt finish [--yes|-y] [--force]`
 
 Integrates the worktree back into its base branch and cleans up.
 
 Pass `--yes` or `-y` to skip routine confirmation prompts (useful when running from scripts or Claude Code).
 
-Pass `--force` to override non-skippable safety gates (untracked files, open PR).
-
-Pass `--dry-run` to preview what would happen without making any changes. No stdout output (preserves shell wrapper contract).
+Pass `--force` to override non-skippable safety gates (untracked files).
 
 **Strategy (auto-detected):**
 - **No merge commits** (clean history): rebases onto base and fast-forwards → linear history
-- **Merge commits present** (from `wt update`): squash-merges into base → single commit on base, avoids re-encountering conflicts
+- **Merge commits present** (from `wt sync`): squash-merges into base → single commit on base, avoids re-encountering conflicts
 
 **Safety checks (in order):**
 1. Verifies you're in a worktree (not the main checkout) — errors if not
 2. Aborts if there are tracked uncommitted changes — not skipped by `--yes` or `--force`
 3. **Non-skippable:** warns if there are untracked files (they will be permanently deleted) — prompts even with `--yes`; only `--force` bypasses
-4. If `gh` is installed: checks for a GitHub PR on the current branch
-   - **PR merged**: confirms cleanup (skipped with `--yes`), removes worktree + branch without rebasing, returns
-   - **PR open**: errors unless `--force` is passed; with `--force`, proceeds to local integration flow
-   - **No PR / gh unavailable**: continues with local integration flow below
-5. Detects strategy (rebase vs squash) based on merge commits in `<base>..HEAD`
-   - **Squash path**: confirms `Squash-merge wt/<slug> into <base>?` — skipped by `--yes` and `--dry-run`. Requires base to be an ancestor of HEAD (i.e. `wt update` was run). If base has new commits since the last `wt update`, errors with a prompt to run `wt update` again.
-   - **Rebase path**: confirms `Rebase wt/<slug> onto <base> and fast-forward?` — skipped by `--yes` and `--dry-run`. Fetches remote base (best-effort). Rebases — SIGINT-trapped; aborts cleanly on Ctrl+C; aborts and prints manual instructions on conflict.
-6. Fast-forwards base branch to the integrated tip (checks all worktrees, not just main)
-7. Removes worktree directory and branch
-8. Inside tmux: prints a reminder to close the current window
-9. `cd`s back to main checkout (via shell wrapper)
+4. Detects strategy (rebase vs squash) based on merge commits in `<base>..HEAD`
+   - **Squash path**: confirms `Squash-merge wt/<slug> into <base>?` — skipped by `--yes`. Requires base to be an ancestor of HEAD (i.e. `wt sync` was run). If base has new commits since the last `wt sync`, errors with a prompt to run `wt sync` again.
+   - **Rebase path**: confirms `Rebase wt/<slug> onto <base> and fast-forward?` — skipped by `--yes`. Fetches remote base (best-effort). Rebases — SIGINT-trapped; aborts cleanly on Ctrl+C; aborts and prints manual instructions on conflict.
+5. Fast-forwards base branch to the integrated tip (checks all worktrees, not just main)
+6. Removes worktree directory and branch
+7. Inside tmux: prints a reminder to close the current window
+8. `cd`s back to main checkout (via shell wrapper)
 
 
 ### `wt sync`
 
-Rebases the current worktree branch onto the latest base branch from origin. Keeps long-lived worktrees current without finishing them.
-
-**Steps:**
-1. Verifies you're in a worktree — errors if not
-2. Aborts if there are uncommitted changes
-3. Fetches `origin/<base_branch>` (warns on failure, falls back to local ref)
-4. Rebases the worktree branch onto `origin/<base_branch>` — aborts and prints manual instructions if there are conflicts
-5. Prints success — worktree stays intact, no cleanup
-
-Unlike `wt finish`, sync does not merge into the base, remove the worktree, or change your working directory.
-
-### `wt update`
-
-Merges the **local** base branch into the current worktree branch, creating a merge commit. Designed for LLM-assisted conflict resolution (e.g. Claude Code) — when conflicts occur, the LLM analyses each conflict, resolves clear cases autonomously, and asks the user for guidance when the correct resolution requires product or business knowledge.
+Merges the **local** base branch into the current worktree branch. Keeps long-lived worktrees current without finishing them. Designed for LLM-assisted conflict resolution — when conflicts occur, shows file-level context (conflicted lines, commit history for both sides) so the LLM can resolve clear cases autonomously and ask for guidance on ambiguous ones.
 
 **Steps:**
 1. Verifies you're in a worktree — errors if not
@@ -191,7 +161,7 @@ Merges the **local** base branch into the current worktree branch, creating a me
 4. Errors if the base branch ref doesn't exist locally
 5. If already up to date (base is an ancestor of HEAD), exits with success
 6. Runs `git merge <base_branch>` — exits on success
-7. On conflict: lists conflicted files and resolution instructions, exits 1
+7. On conflict: lists conflicted files with line numbers and commit context, exits 1
 
 **When conflicts occur (LLM flow):**
 1. Read each conflicted file — both sides of every `<<<<<<<`/`=======`/`>>>>>>>` marker
@@ -200,9 +170,7 @@ Merges the **local** base branch into the current worktree branch, creating a me
 4. `git add <resolved-files>`, then `git merge --continue`
 5. To abort: `git merge --abort`
 
-**`wt sync` vs `wt update`:**
-- `wt sync` — rebases (linear history), fetches from origin, for human use
-- `wt update` — merges (merge commit), uses local base only, designed for LLM use
+Unlike `wt finish`, sync does not merge into the base, remove the worktree, or change your working directory.
 
 ### `wt retarget [branch]`
 
@@ -220,15 +188,13 @@ wt retarget
 
 After retargeting, run `wt sync` if you want to rebase the working branch onto the new base immediately.
 
-### `wt abandon [--yes|-y] [--force] [--dry-run]`
+### `wt abandon [--yes|-y] [--force]`
 
 Abandons a worktree without merging — for dead-end experiments.
 
 Pass `--yes` or `-y` to skip routine confirmation prompts.
 
 Pass `--force` to override the non-skippable unpushed-commits safety gate.
-
-Pass `--dry-run` to preview what would happen without making any changes.
 
 **Safety checks (in order):**
 1. Verifies you're in a worktree
@@ -249,8 +215,8 @@ Pushes the worktree branch and opens a GitHub PR. Requires the [GitHub CLI](http
 **Steps:**
 1. Verifies you're in a worktree — errors if not
 2. Aborts if there are uncommitted changes
-3. Prompts to confirm or change the base branch (skipped with `--yes`). If changed, updates `.wt-meta` so future `wt pr`/`wt sync`/`wt finish` use the new base.
-4. If no merge commits in `<base>..HEAD`: fetches and rebases onto `origin/<base_branch>` (same as `wt sync`) — pauses on conflicts. If merge commits are present (from `wt update`): skips rebase to avoid re-encountering resolved conflicts.
+3. Shows current base branch with a hint to use `wt retarget` to change it
+4. If no merge commits in `<base>..HEAD`: fetches and rebases onto `origin/<base_branch>` — pauses on conflicts. If merge commits are present (from `wt sync`): skips rebase to avoid re-encountering resolved conflicts.
 5. Pushes to origin with `--force-with-lease` (needed after rebase rewrites history)
 6. If a PR already exists for this branch, prints the URL and returns
 7. Auto-generates the PR body from commits on the branch (`git log --oneline` as a bullet list)
@@ -259,7 +225,7 @@ Pushes the worktree branch and opens a GitHub PR. Requires the [GitHub CLI](http
 
 Pass `--draft` to create a draft PR. Pass `--yes`/`-y` to skip all confirmation prompts.
 
-The worktree stays alive after `wt pr` — keep pushing updates. Use `wt finish` or `wt abandon` when the PR is merged or abandoned.
+The worktree stays alive after `wt pr` — keep pushing updates. Use `wt abandon` when the PR is merged or abandoned.
 
 ### `wt status`
 
@@ -342,16 +308,11 @@ wt finish   # rebases onto base, fast-forwards, cleans up
 
 ### Recovering from a conflict in `wt finish`
 
-If `wt finish` aborts due to a rebase conflict, you have two options:
+If `wt finish` aborts due to a rebase conflict:
 
 ```bash
-# Option 1: resolve via rebase (linear history)
-git rebase <base-branch>   # resolve conflicts (git add + git rebase --continue)
-wt finish                  # retry
-
-# Option 2: use wt update instead (merge, LLM-friendly)
-git rebase --abort
-wt update                  # merge base into worktree (Claude resolves conflicts)
+# Merge base into worktree instead (LLM-friendly conflict output)
+wt sync                    # merge base into worktree (Claude resolves conflicts)
 wt finish                  # squash path auto-detected — no rebase, no re-conflict
 ```
 
@@ -365,7 +326,7 @@ myapp/fix-logout-redirect
 
 ## Notes
 
-- Worktrees share `.git` but **not** `node_modules`. By default `wt new` skips deps handling entirely. Use `--with-deps` to copy `node_modules/` from the main checkout (JS, CoW) or to be prompted to install (JS without `node_modules/` or non-JS projects).
+- Worktrees share `.git` but **not** `node_modules` or virtual environments. `wt new` reminds you to install dependencies.
 - The `.wt-meta` file inside each worktree is required by `wt finish` and `wt list`. Don't delete it.
 - Branch names are prefixed with `wt/` to keep them namespaced and easy to identify.
 - Descriptions are truncated to 50 characters when generating the slug.

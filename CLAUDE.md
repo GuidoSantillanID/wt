@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`wt` is a single-file bash CLI (`bin/wt`, ~1130 lines) that automates git worktree lifecycle: create, sync, finish (rebase+ff+cleanup), abandon, PR, list, doctor. Designed for parallel Claude Code + tmux workflows.
+`wt` is a single-file bash CLI (`bin/wt`, ~1390 lines) that automates git worktree lifecycle: create, sync, finish (rebase+ff+cleanup), abandon, PR, list, doctor. Designed for parallel Claude Code + tmux workflows.
 
 ## Commands
 
@@ -49,11 +49,11 @@ Plain `key=value` file in each worktree root. Seven fields: `base_branch`, `crea
 - Color detection checks stdout (`-t 1`), not stderr, because `wt list` pipes through stdout
 - `fd 5` trick in `cmd_doctor` keeps stdin free for `confirm()` during inner loops
 
-## wt update — Claude Code integration
+## wt sync — Claude Code integration
 
-`wt update` is the **one exception** to the "never run `wt` commands via Bash tool" rule. It is safe for Claude Code to invoke autonomously.
+`wt sync` is the **one exception** to the "never run `wt` commands via Bash tool" rule. It is safe for Claude Code to invoke autonomously.
 
-`wt update` merges the local base branch into the current worktree branch. When conflicts occur:
+`wt sync` merges the local base branch into the current worktree branch. When conflicts occur:
 
 1. Read every conflicted file (they contain `<<<<<<<`/`=======`/`>>>>>>>` markers)
 2. For each conflict, analyse both sides — understand what each change is trying to do

@@ -168,16 +168,15 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 10. git worktree add <worktree_path> -b <branch>
 11. Write .wt-meta
 12. Add ".wt-meta" to GIT_COMMON_DIR/info/exclude (if not present)
-13. Detect package manager: uv.lock → uv, poetry.lock → poetry, requirements.txt/pyproject.toml → pip; package.json + pnpm-lock.yaml → pnpm, yarn.lock → yarn, else → npm
-14. If --with-deps: copy node_modules (JS+CoW) or warn + prompt to install; else if PM detected: show hint "Detected <pm> — use --with-deps to copy/install dependencies"
-15. Print worktree_path to stdout (shell wrapper uses this to cd)
+13. Print generic dependency hint
+14. Print worktree_path to stdout (shell wrapper uses this to cd)
 ```
 
-### `wt finish [--yes|-y] [--force] [--dry-run]`
+### `wt finish [--yes|-y] [--force]`
 
 Strategy is auto-detected from `git rev-list --merges <base_branch>..HEAD`:
 - **No merge commits** → rebase path (linear history)
-- **Merge commits present** (from `wt update`) → squash path (avoids re-conflict)
+- **Merge commits present** (from `wt sync`) → squash path (avoids re-conflict)
 
 ```
 1. git rev-parse --show-toplevel → repo_root
@@ -185,47 +184,30 @@ Strategy is auto-detected from `git rev-list --merges <base_branch>..HEAD`:
 3. Read .wt-meta: base_branch, branch, description, project, project_root, slug
 4. Validate: no uncommitted changes (git status --porcelain)  ← not skipped by --yes or --force
 5. Non-skippable: if untracked files exist → warn + confirm "Untracked files will be lost"
-   ← --yes does NOT skip; only --force bypasses; --dry-run skips prompt (shows warning in output)
-6. PR-flow detection (if gh available): merged → cleanup+return; open → error (or --force continues); else → fall through
-7. Detect strategy: has_merges=$(git rev-list --merges <base_branch>..HEAD | head -1)
-8. get_main_worktree()
+   ← --yes does NOT skip; only --force bypasses
+6. Detect strategy: has_merges=$(git rev-list --merges <base_branch>..HEAD | head -1)
+7. get_main_worktree()
 
 SQUASH PATH (has_merges non-empty):
-  10. Pre-flight: git merge-base --is-ancestor <base_branch> HEAD
-      → if false: error "Run 'wt update' first" (base has new commits since last update)
-  11. Confirm: "Squash-merge <branch> into <base_branch>?"  ← skipped by --yes and --dry-run
-  12. --dry-run: print plan, return 0 (no stdout — cd contract)
-  13. squash_commit=$(git commit-tree HEAD^{tree} -p <base_branch> -m <description>)
+  8. Pre-flight: git merge-base --is-ancestor <base_branch> HEAD
+     → if false: error "Run 'wt sync' first" (base has new commits since last sync)
+  9. Confirm: "Squash-merge <branch> into <base_branch>?"  ← skipped by --yes
+  10. squash_commit=$(git commit-tree HEAD^{tree} -p <base_branch> -m <description>)
       (tree = HEAD's tree; parent = base_branch only; message = description from .wt-meta)
-  14. _ff_onto_base(squash_commit, base_branch, repo_root, branch)
-  15. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true, project_root)
-  16. Print main_wt to stdout (shell wrapper uses this to cd back)
+  11. _ff_onto_base(squash_commit, base_branch, repo_root, branch)
+  12. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true, project_root)
+  13. Print main_wt to stdout (shell wrapper uses this to cd back)
 
 REBASE PATH (has_merges empty):
-  10. Confirm: "Rebase <branch> onto <base_branch> and fast-forward?"  ← skipped by --yes and --dry-run
-  11. --dry-run: print plan, return 0 (no stdout — cd contract)
-  12. _rebase_onto_base(base_branch, branch, --prefer-local) — SIGINT-trapped internally
-      → on conflict: git rebase --abort; print "Run wt sync or wt update"; exit 1
-  13. _ff_onto_base(HEAD, base_branch, repo_root, branch)
-  14. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true, project_root)
-  15. Print main_wt to stdout (shell wrapper uses this to cd back)
+  8. Confirm: "Rebase <branch> onto <base_branch> and fast-forward?"  ← skipped by --yes
+  9. _rebase_onto_base(base_branch, branch, --prefer-local) — SIGINT-trapped internally
+     → on conflict: git rebase --abort; print "Run wt sync"; exit 1
+  10. _ff_onto_base(HEAD, base_branch, repo_root, branch)
+  11. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true, project_root)
+  12. Print main_wt to stdout (shell wrapper uses this to cd back)
 ```
 
 ### `wt sync`
-
-```
-1. git rev-parse --show-toplevel → repo_root
-2. Verify: repo_root/.git is a FILE → in a worktree; dir → error "main checkout"
-3. Read .wt-meta: base_branch, branch, description
-4. Validate: no uncommitted changes (git status --porcelain)
-5. _rebase_onto_base(base_branch, branch, --prefer-local)
-   → on conflict: print continue/abort instructions; exit 1
-6. Print success — no stdout output, no cleanup
-```
-
-Key difference from `wt finish`: no confirmation, no fast-forward, no cleanup, no cd.
-
-### `wt update`
 
 ```
 1. git rev-parse --show-toplevel → repo_root
@@ -239,15 +221,15 @@ Key difference from `wt finish`: no confirmation, no fast-forward, no cleanup, n
 9. git merge-base --is-ancestor <base_branch> HEAD → if true, "Already up to date", return 0
 10. git merge <base_branch>
     → on success: print success message; return 0
-    → on conflict: warn, print git merge --continue instructions,
-                   list files (git diff --name-only --diff-filter=U), exit 1
+    → on conflict: show LLM-friendly output (conflicted files with line numbers,
+                   commit context for both sides), print git merge --continue instructions, exit 1
 ```
 
-Key differences from `wt sync`:
-- **Merge, not rebase** — produces a merge commit; all conflicts surface in one round
-- **Local base only** — no `git fetch`; user controls what's on the local base branch
-- **Untracked files allowed** — only tracked uncommitted changes block the command
-- **Designed for LLM use** — safe for Claude Code to invoke autonomously
+Key difference from `wt finish`: no confirmation, no fast-forward, no cleanup, no cd.
+**Merge-based** — produces a merge commit; all conflicts surface in one round.
+**Local base only** — no `git fetch`; user controls what's on the local base branch.
+**Untracked files allowed** — only tracked uncommitted changes block.
+**Safe for Claude Code** to invoke autonomously.
 
 ### `wt retarget [branch]`
 
@@ -302,21 +284,20 @@ Used by `cmd_finish` (both squash and rebase paths):
 4. Returns git rebase exit code — conflict handling left to caller
 ```
 
-Used by `cmd_finish` (rebase path only), `cmd_sync`, and `cmd_pr` (clean branches only). Each caller handles conflict differently:
-- `cmd_finish` (rebase path): `git rebase --abort`, print "Run 'wt sync' or 'wt update'", exit 1
-- `cmd_sync`: leave in conflict state, print continue/abort/wt-update instructions, exit 1
+Used by `cmd_finish` (rebase path only) and `cmd_pr` (clean branches only). Each caller handles conflict differently:
+- `cmd_finish` (rebase path): `git rebase --abort`, print "Run 'wt sync'", exit 1
 - `cmd_pr`: leave in conflict state, print continue/abort instructions, exit 1
 
-`cmd_update` does NOT use this helper — it uses `git merge` directly instead.
+`cmd_sync` does NOT use this helper — it uses `git merge` directly instead.
 
 `cmd_pr` does NOT use `--prefer-local`: the PR targets the remote branch, so
 rebasing onto local-only commits would include unpushed base work in the PR diff.
 
 `cmd_pr` skips `_rebase_onto_base` entirely when merge commits are present in `<base>..HEAD`
 (detected via `git rev-list --merges`). This avoids re-encountering conflicts already resolved
-by `wt update`.
+by `wt sync`.
 
-### `wt abandon [--yes|-y] [--force] [--dry-run]`
+### `wt abandon [--yes|-y] [--force]`
 
 ```
 1-3. Same as finish (verify worktree, read meta, validate slug/branch)
@@ -324,10 +305,9 @@ by `wt update`.
 5. Non-skippable: count commits ahead of base_branch; if > 0 → warn + list commits + confirm
    ← --yes does NOT skip; only --force bypasses
 6. Confirm: "Drop <branch>? (no merge)"  ← skipped by --yes
-7. --dry-run: print plan (commit count, worktree path), return 0 (no stdout)
-8. get_main_worktree()
-9. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true, project_root)
-10. Print main_wt to stdout
+7. get_main_worktree()
+8. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true, project_root)
+9. Print main_wt to stdout
 ```
 
 ### `_cleanup_worktree` (shared)
@@ -447,8 +427,8 @@ The registry is a plain text file (`~/.config/wt/projects`, one path per line). 
 5. **`info/exclude` over `.gitignore`** — keep `.worktrees/` and `.wt-meta` out of committed gitignore
 6. **stdout is reserved for path output** — all UI to stderr; the shell wrapper depends on this contract
 7. **tmux operations are always optional** — guard every tmux call with an "are we in tmux?" check
-8. **`--yes` skips routine confirms; `--force` overrides safety gates** — untracked files in finish, unpushed commits in drop, open PR in finish are non-skippable by `--yes`; they require explicit `--force`
-9. **SIGINT-trapped rebase paths** — `cmd_finish`, `cmd_sync`, `cmd_pr` set a trap before `git rebase` that aborts the rebase and exits 130 on Ctrl+C; trap is cleared after rebase completes
+8. **`--yes` skips routine confirms; `--force` overrides safety gates** — untracked files in finish, unpushed commits in abandon are non-skippable by `--yes`; they require explicit `--force`
+9. **SIGINT-trapped rebase paths** — `cmd_finish` and `cmd_pr` set a trap before `git rebase` that aborts the rebase and exits 130 on Ctrl+C; trap is cleared after rebase completes
 
 ---
 
@@ -721,7 +701,7 @@ Two parallel feature branches merged:
 
 **Fix:** detect merge commits and switch strategy.
 
-63. **`wt finish` squash path** — When `git rev-list --merges <base>..HEAD` is non-empty (merge commits from `wt update`), `wt finish` uses `git commit-tree HEAD^{tree} -p <base> -m <description>` to create a single squash commit instead of rebasing. The squash commit has the full merged tree and the base as its only parent — a guaranteed fast-forward. Pre-flight check: `git merge-base --is-ancestor <base> HEAD` must pass; if not, the user is prompted to run `wt update` first.
+63. **`wt finish` squash path** — When `git rev-list --merges <base>..HEAD` is non-empty (merge commits from `wt sync`), `wt finish` uses `git commit-tree HEAD^{tree} -p <base> -m <description>` to create a single squash commit instead of rebasing. The squash commit has the full merged tree and the base as its only parent — a guaranteed fast-forward. Pre-flight check: `git merge-base --is-ancestor <base> HEAD` must pass; if not, the user is prompted to run `wt update` first.
 
 64. **`wt pr` skips rebase when merge commits present** — `cmd_pr` checks `git rev-list --merges <base>..HEAD` before calling `_rebase_onto_base`. If merge commits are present, the rebase is skipped. `--force-with-lease` push works correctly in both cases.
 

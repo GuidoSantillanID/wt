@@ -391,95 +391,7 @@ assert_contains "remote-advance commit landed on dev" "remote advance commit" \
 git -C "$REPO" remote remove origin 2>/dev/null || true
 rm -rf "$BARE_FIN"
 
-# ── wt finish — PR-flow detection ─────────────────────────────────────────────
-
-MOCK_BIN_FIN="${TMPROOT}/mock-bin-fin"
-mkdir -p "$MOCK_BIN_FIN"
-cat > "${MOCK_BIN_FIN}/gh" << 'MOCKEOF_FIN'
-#!/usr/bin/env bash
-echo "$@" >> "${MOCK_BIN_FIN_PATH}/gh-calls.log"
-if [[ "$1" == "pr" && "$2" == "view" ]]; then
-  echo "MERGED"
-fi
-MOCKEOF_FIN
-sed -i.bak "s|\${MOCK_BIN_FIN_PATH}|${MOCK_BIN_FIN}|g" "${MOCK_BIN_FIN}/gh" && rm "${MOCK_BIN_FIN}/gh.bak"
-chmod +x "${MOCK_BIN_FIN}/gh"
-
-section "wt finish — PR merged skips rebase"
-cd "$REPO"
-git -C "$REPO" checkout -q dev
-WT_PATH_FM="${REPO}/.worktrees/finish-merged-test"
-stdout_fm=$(wt new "finish merged test" 2>/dev/null)
-assert_eq "created finish-merged worktree" "$WT_PATH_FM" "$stdout_fm"
-echo "pr-merged-work" > "${WT_PATH_FM}/pr-merged.txt"
-git -C "$WT_PATH_FM" add pr-merged.txt
-git -C "$WT_PATH_FM" commit -q -m "PR merged test commit"
-cd "$WT_PATH_FM"
-rm -f "${MOCK_BIN_FIN}/gh-calls.log"
-_tmp_fm=$(mktemp)
-stdout_fin_m=$(printf "y\n" | PATH="${MOCK_BIN_FIN}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" finish 2>"$_tmp_fm")
-out_fin_m=$(cat "$_tmp_fm"); rm -f "$_tmp_fm"
-assert_contains       "reports PR merged"     "PR merged"  "$out_fin_m"
-assert_contains       "reports Done"          "Done!"      "$out_fin_m"
-assert_eq             "stdout is main path"   "$REPO"      "$stdout_fin_m"
-assert_dir_not_exists "worktree removed"      "$WT_PATH_FM"
-branch_fm=$(git -C "$REPO" rev-parse --verify "wt/finish-merged-test" 2>/dev/null || echo "gone")
-assert_eq             "branch deleted"        "gone"       "$branch_fm"
-gh_log_fin=$(cat "${MOCK_BIN_FIN}/gh-calls.log" 2>/dev/null || echo "")
-assert_contains       "gh pr view called"     "pr view"    "$gh_log_fin"
-assert_not_contains   "rebase skipped"        "Rebase"     "$out_fin_m"
-
-section "wt finish — PR open blocks finish"
-cd "$REPO"
-git -C "$REPO" checkout -q dev
-WT_PATH_FO="${REPO}/.worktrees/finish-open-test"
-stdout_fo=$(wt new "finish open test" 2>/dev/null)
-assert_eq "created finish-open worktree" "$WT_PATH_FO" "$stdout_fo"
-echo "pr-open-work" > "${WT_PATH_FO}/pr-open.txt"
-git -C "$WT_PATH_FO" add pr-open.txt
-git -C "$WT_PATH_FO" commit -q -m "PR open test commit"
-cat > "${MOCK_BIN_FIN}/gh" << 'MOCKEOF_FIN_O'
-#!/usr/bin/env bash
-if [[ "$1" == "pr" && "$2" == "view" ]]; then
-  echo "OPEN"
-fi
-MOCKEOF_FIN_O
-chmod +x "${MOCK_BIN_FIN}/gh"
-cd "$WT_PATH_FO"
-_tmp_fo=$(mktemp)
-PATH="${MOCK_BIN_FIN}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" finish 2>"$_tmp_fo" || true
-out_fin_o=$(cat "$_tmp_fo"); rm -f "$_tmp_fo"
-assert_contains "errors on open PR" "still open" "$out_fin_o"
-git -C "$REPO" worktree remove "$WT_PATH_FO" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/finish-open-test" 2>/dev/null || true
-
-section "wt finish --yes — PR merged skips confirm"
-cd "$REPO"
-git -C "$REPO" checkout -q dev
-WT_PATH_FMY="${REPO}/.worktrees/finish-merged-yes-test"
-stdout_fmy=$(wt new "finish merged yes test" 2>/dev/null)
-assert_eq "created finish-merged-yes worktree" "$WT_PATH_FMY" "$stdout_fmy"
-echo "pr-merged-yes" > "${WT_PATH_FMY}/pr-merged-yes.txt"
-git -C "$WT_PATH_FMY" add pr-merged-yes.txt
-git -C "$WT_PATH_FMY" commit -q -m "PR merged --yes test commit"
-cat > "${MOCK_BIN_FIN}/gh" << 'MOCKEOF_FIN_M'
-#!/usr/bin/env bash
-if [[ "$1" == "pr" && "$2" == "view" ]]; then
-  echo "MERGED"
-fi
-MOCKEOF_FIN_M
-chmod +x "${MOCK_BIN_FIN}/gh"
-cd "$WT_PATH_FMY"
-_tmp_fmy=$(mktemp)
-stdout_fin_my=$(PATH="${MOCK_BIN_FIN}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" finish --yes 2>"$_tmp_fmy")
-out_fin_my=$(cat "$_tmp_fmy"); rm -f "$_tmp_fmy"
-assert_contains       "cleanup succeeds"      "Done!"           "$out_fin_my"
-assert_eq             "stdout is main path"   "$REPO"           "$stdout_fin_my"
-assert_dir_not_exists "worktree removed"      "$WT_PATH_FMY"
-branch_fmy=$(git -C "$REPO" rev-parse --verify "wt/finish-merged-yes-test" 2>/dev/null || echo "gone")
-assert_eq             "branch deleted"        "gone"            "$branch_fmy"
-
-rm -rf "$MOCK_BIN_FIN"
+# PR-flow detection removed from finish — finish is purely local now
 
 # ── wt abandon --yes ──────────────────────────────────────────────────────────
 section "wt abandon --yes — clean worktree (no stdin pipe)"
@@ -530,7 +442,7 @@ cd "$REPO"
 out_main=$(wt sync 2>&1 || true)
 assert_contains "errors when not in a worktree" "main checkout" "$out_main"
 
-section "wt sync — rebases onto diverged base"
+section "wt sync — merges diverged base"
 cd "$REPO"
 git -C "$REPO" checkout -q dev
 WT_PATH_SYNC="${REPO}/.worktrees/sync-test"
@@ -544,30 +456,41 @@ git -C "$REPO" checkout -q dev
 echo "base-advance" > "${REPO}/base-advance.txt"
 git -C "$REPO" add base-advance.txt
 git -C "$REPO" commit -q -m "base advanced"
-# Sync from worktree (no remote — falls back to local ref)
+git -C "$REPO" checkout -q dev
+# Sync from worktree — now merges (not rebases)
 cd "$WT_PATH_SYNC"
 out_sync=$(wt sync 2>&1)
-assert_contains "sync reports success" "Synced" "$out_sync"
+assert_contains "sync reports merge success" "Merged" "$out_sync"
 # Verify base commit is reachable in worktree
 assert_contains "base commit reachable" "base advanced" "$(git -C "$WT_PATH_SYNC" log --oneline -5)"
 # Verify worktree commit still present
 assert_contains "worktree commit preserved" "worktree commit" "$(git -C "$WT_PATH_SYNC" log --oneline -5)"
-# Verify linear history (no merge commits)
-assert_not_contains "no merge commits" "Merge" "$(git -C "$WT_PATH_SYNC" log --oneline -10)"
+# Verify merge commit present (not linear rebase)
+assert_contains "merge commit present" "Merge" "$(git -C "$WT_PATH_SYNC" log --oneline -10)"
+# No stdout (stdout/stderr contract)
+stdout_sync=$(wt sync 2>/dev/null)
+assert_eq "no stdout from sync" "" "$stdout_sync"
 # Verify worktree still exists (sync doesn't clean up)
 assert_dir_exists "worktree still intact" "$WT_PATH_SYNC"
 
 section "wt sync — already up to date"
 cd "$WT_PATH_SYNC"
 out_uptodate=$(wt sync 2>&1)
-assert_contains "sync succeeds when up to date" "Synced" "$out_uptodate"
+assert_contains "sync succeeds when up to date" "Already up to date" "$out_uptodate"
 
-section "wt sync — blocks on dirty worktree"
+section "wt sync — blocks on uncommitted tracked changes"
 cd "$WT_PATH_SYNC"
-echo "dirty" > dirty-sync.txt
+echo "dirty" >> "${WT_PATH_SYNC}/wt-work.txt"
 out_dirty=$(wt sync 2>&1 || true)
-assert_contains "blocks on uncommitted changes" "Uncommitted changes" "$out_dirty"
-rm dirty-sync.txt
+assert_contains "blocks on tracked uncommitted changes" "Uncommitted changes" "$out_dirty"
+git -C "$WT_PATH_SYNC" checkout -- wt-work.txt
+
+section "wt sync — untracked files do not block"
+cd "$WT_PATH_SYNC"
+echo "untracked" > "${WT_PATH_SYNC}/untracked-sync.txt"
+out_untrack=$(wt sync 2>&1)
+assert_contains "sync succeeds with untracked" "Already up to date" "$out_untrack"
+rm -f "${WT_PATH_SYNC}/untracked-sync.txt"
 
 # Clean up sync worktree
 cd "$REPO"
@@ -658,138 +581,35 @@ printf "y\n" | wt doctor 2>/dev/null || true
 assert_not_contains "stale entry removed from registry" "/nonexistent/stale/path" "$(cat "$registry_file" 2>/dev/null)"
 
 # ── wt new --with-deps ───────────────────────────────────────────────────────
-section "wt new --with-deps — unknown flag error"
+section "wt new — unknown flag error"
 cd "$REPO"
 out=$(wt new --foo "something" 2>&1 || true)
 assert_contains "unknown flag error" "Unknown flag" "$out"
 
-section "wt new --with-deps — JS project with node_modules present"
-# Add package.json to dev branch and create node_modules in main checkout
+section "wt new — --with-deps is now unknown flag"
+cd "$REPO"
+out=$(wt new --with-deps "something" 2>&1 || true)
+assert_contains "--with-deps is unknown" "Unknown flag" "$out"
+
+section "wt new — shows generic dependency hint"
+cd "$REPO"
 git -C "$REPO" checkout -q dev
+# Add package.json to dev so it's a "project with deps"
 echo '{"name":"test-project","version":"1.0.0"}' > "${REPO}/package.json"
 git -C "$REPO" add package.json
 git -C "$REPO" commit -q -m "add package.json"
-mkdir -p "${REPO}/node_modules/some-pkg"
-echo '{"name":"some-pkg"}' > "${REPO}/node_modules/some-pkg/package.json"
-
-cd "$REPO"
-WT_CD="${REPO}/.worktrees/with-deps-test"
-stdout_cd=$(wt new --with-deps "with deps test" 2>/dev/null)
-assert_eq          "stdout is worktree path"            "$WT_CD" "$stdout_cd"
-assert_dir_exists  "worktree created"                   "$WT_CD"
-assert_dir_exists  "node_modules copied to worktree"    "${WT_CD}/node_modules"
-assert_dir_exists  "nested package copied"              "${WT_CD}/node_modules/some-pkg"
+WT_HINT="${REPO}/.worktrees/dep-hint-test"
+_tmp_hint=$(mktemp)
+stdout_hint=$(wt new "dep hint test" 2>"$_tmp_hint")
+out_hint=$(cat "$_tmp_hint"); rm -f "$_tmp_hint"
+assert_eq       "stdout is worktree path" "$WT_HINT" "$stdout_hint"
+assert_contains "generic dep hint shown"  "dependencies" "$out_hint"
+assert_contains "mentions package manager" "package manager" "$out_hint"
 # Cleanup
-git -C "$REPO" worktree remove "${WT_CD}" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/with-deps-test" 2>/dev/null || true
-rm -rf "${REPO}/node_modules"
-
-section "wt new --with-deps — JS project without node_modules prompts to install"
-cd "$REPO"
-# No node_modules/ in project_root now
-WT_CDN="${REPO}/.worktrees/with-deps-no-nm"
-_tmp_cdn=$(mktemp)
-stdout_cdn=$(printf "n\n" | wt new --with-deps "with deps no nm" 2>"$_tmp_cdn")
-out_cdn=$(cat "$_tmp_cdn"); rm -f "$_tmp_cdn"
-assert_eq          "stdout is worktree path"            "${WT_CDN}" "$stdout_cdn"
-assert_dir_exists  "worktree still created"             "${WT_CDN}"
-assert_contains    "warns about needing install"        "node_modules/venv" "$out_cdn"
-# Cleanup
-git -C "$REPO" worktree remove "${WT_CDN}" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/with-deps-no-nm" 2>/dev/null || true
-
-section "wt new (no flag) — JS project with node_modules: no copy, no prompt"
-cd "$REPO"
-# package.json is on dev; add node_modules back
-mkdir -p "${REPO}/node_modules/some-pkg"
-echo '{"name":"some-pkg"}' > "${REPO}/node_modules/some-pkg/package.json"
-WT_NF="${REPO}/.worktrees/no-flag-js"
-_tmp_nf=$(mktemp)
-stdout_nf=$(wt new "no flag js" 2>"$_tmp_nf")
-out_nf=$(cat "$_tmp_nf"); rm -f "$_tmp_nf"
-assert_eq             "stdout is worktree path"            "${WT_NF}" "$stdout_nf"
-assert_dir_exists     "worktree created"                   "${WT_NF}"
-assert_not_contains   "no interactive install prompt"      "Run '"    "$out_nf"
-assert_contains       "dep hint shown"                     "Detected" "$out_nf"
-assert_dir_not_exists "node_modules not copied without flag" "${WT_NF}/node_modules"
-# Cleanup
-git -C "$REPO" worktree remove "${WT_NF}" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/no-flag-js" 2>/dev/null || true
-rm -rf "${REPO}/node_modules"
-
-section "wt new --with-deps — non-JS project prompts to install"
-# Use main branch (no package.json); add requirements.txt to trigger pip detection
-git -C "$REPO" checkout -q main
-echo "requests" > "${REPO}/requirements.txt"
-git -C "$REPO" add requirements.txt
-git -C "$REPO" commit -q -m "add requirements.txt"
-cd "$REPO"
-WT_NONJS="${REPO}/.worktrees/with-deps-non-js"
-_tmp_nonjs=$(mktemp)
-stdout_nonjs=$(printf "n\n" | wt new --with-deps "with deps non js" 2>"$_tmp_nonjs")
-out_nonjs=$(cat "$_tmp_nonjs"); rm -f "$_tmp_nonjs"
-assert_eq         "stdout is worktree path"    "${WT_NONJS}" "$stdout_nonjs"
-assert_dir_exists "worktree created"           "${WT_NONJS}"
-assert_contains   "warns about needing install" "node_modules/venv" "$out_nonjs"
-# Cleanup
-git -C "$REPO" worktree remove "${WT_NONJS}" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/with-deps-non-js" 2>/dev/null || true
-git -C "$REPO" rm -q requirements.txt
-git -C "$REPO" commit -q -m "remove requirements.txt"
-git -C "$REPO" checkout -q dev
-
-section "wt new --with-deps — flag before description"
-mkdir -p "${REPO}/node_modules"
-cd "$REPO"
-WT_FP="${REPO}/.worktrees/flag-pos-test"
-stdout_fp=$(wt new --with-deps "flag pos test" 2>/dev/null)
-assert_eq "flag before desc works" "$WT_FP" "$stdout_fp"
-git -C "$REPO" worktree remove "${WT_FP}" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/flag-pos-test" 2>/dev/null || true
-rm -rf "${REPO}/node_modules"
-
-# ── dep hint (no --with-deps) ─────────────────────────────────────────────────
-section "dep hint — pnpm project shows hint without --with-deps"
-# Add pnpm-lock.yaml to dev branch so pm is detected as pnpm
-echo "lockfileVersion: '6.0'" > "${REPO}/pnpm-lock.yaml"
-git -C "$REPO" add pnpm-lock.yaml
-git -C "$REPO" commit -q -m "add pnpm-lock.yaml"
-cd "$REPO"
-WT_DH="${REPO}/.worktrees/hint-pnpm-test"
-_tmp_dh=$(mktemp)
-stdout_dh=$(wt new "hint pnpm test" 2>"$_tmp_dh")
-out_dh=$(cat "$_tmp_dh"); rm -f "$_tmp_dh"
-assert_eq        "stdout is worktree path"    "${WT_DH}" "$stdout_dh"
-assert_contains  "dep hint shown for pnpm"    "Detected pnpm" "$out_dh"
-# Cleanup
-git -C "$REPO" worktree remove "${WT_DH}" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/hint-pnpm-test" 2>/dev/null || true
-
-section "dep hint — --with-deps: no hint shown"
-cd "$REPO"
-WT_HD="${REPO}/.worktrees/hint-with-deps"
-_tmp_hd=$(mktemp)
-stdout_hd=$(printf "n\n" | wt new --with-deps "hint with deps" 2>"$_tmp_hd")
-out_hd=$(cat "$_tmp_hd"); rm -f "$_tmp_hd"
-assert_not_contains "no hint shown with --with-deps" "Detected pnpm" "$out_hd"
-git -C "$REPO" worktree remove "${WT_HD}" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/hint-with-deps" 2>/dev/null || true
-
-section "dep hint — no PM: no hint"
-# Remove pnpm-lock.yaml and package.json from dev; checkout main (no PM files)
-git -C "$REPO" rm -q pnpm-lock.yaml
-git -C "$REPO" commit -q -m "remove pnpm-lock.yaml"
-git -C "$REPO" checkout -q main
-cd "$REPO"
-WT_NH="${REPO}/.worktrees/hint-no-pm"
-_tmp_nh=$(mktemp)
-stdout_nh=$(wt new "hint no pm" 2>"$_tmp_nh")
-out_nh=$(cat "$_tmp_nh"); rm -f "$_tmp_nh"
-assert_not_contains "no hint without PM" "Detected" "$out_nh"
-# Cleanup
-git -C "$REPO" worktree remove "${WT_NH}" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/hint-no-pm" 2>/dev/null || true
-git -C "$REPO" checkout -q dev
+git -C "$REPO" worktree remove "${WT_HINT}" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/dep-hint-test" 2>/dev/null || true
+git -C "$REPO" rm -q package.json 2>/dev/null || true
+git -C "$REPO" commit -q -m "remove package.json" 2>/dev/null || true
 
 # ─── wt status ───────────────────────────────────────────────────────────────
 
@@ -923,63 +743,34 @@ rm -rf "$MOCK_BIN" "$BARE"
 
 # ─── wt pr — base branch selection ───────────────────────────────────────────
 
-section "wt pr — change base branch interactively"
+section "wt pr — shows base branch and retarget hint"
 cd "$REPO"
 git -C "$REPO" checkout -q dev
-# Create extra branches on origin so the list is non-empty
-BARE2="${TMPROOT}/bare-remote2.git"
-git -C "$REPO" clone --bare . "$BARE2" 2>/dev/null
-# Add a second branch to the bare remote
-git -C "$REPO" push "$BARE2" dev:feature-x 2>/dev/null || true
-
-WT_PATH_BASE="${REPO}/.worktrees/base-change-test"
-wt new "base change test" 2>/dev/null
-echo "work" > "${WT_PATH_BASE}/work.txt"
-git -C "$WT_PATH_BASE" add work.txt
-git -C "$WT_PATH_BASE" commit -q -m "base change test commit"
-git -C "$WT_PATH_BASE" remote set-url origin "$BARE2"
-git -C "$WT_PATH_BASE" fetch origin 2>/dev/null
-
-MOCK_BIN2="${TMPROOT}/mock-bin2"
-mkdir -p "$MOCK_BIN2"
-cat > "${MOCK_BIN2}/gh" << 'MOCKEOF3'
+BARE_HINT="${TMPROOT}/bare-hint.git"
+git -C "$REPO" clone --bare . "$BARE_HINT" 2>/dev/null
+WT_PATH_HINT="${REPO}/.worktrees/pr-hint-test"
+wt new "pr hint test" 2>/dev/null
+echo "work" > "${WT_PATH_HINT}/work.txt"
+git -C "$WT_PATH_HINT" add work.txt
+git -C "$WT_PATH_HINT" commit -q -m "pr hint test commit"
+git -C "$WT_PATH_HINT" remote set-url origin "$BARE_HINT"
+MOCK_BIN_HINT="${TMPROOT}/mock-bin-hint"
+mkdir -p "$MOCK_BIN_HINT"
+cat > "${MOCK_BIN_HINT}/gh" << 'MOCKEOF_HINT'
 #!/usr/bin/env bash
-echo "$@" >> "${MOCK_BIN2_PATH}/gh-calls.log"
-if [[ "$1" == "pr" && "$2" == "view" ]]; then
-  exit 1
-elif [[ "$1" == "pr" && "$2" == "create" ]]; then
-  echo "https://github.com/test/test/pull/99"
-fi
-MOCKEOF3
-sed -i.bak "s|\${MOCK_BIN2_PATH}|${MOCK_BIN2}|g" "${MOCK_BIN2}/gh" && rm "${MOCK_BIN2}/gh.bak"
-chmod +x "${MOCK_BIN2}/gh"
-
-cd "$WT_PATH_BASE"
-# Input: "y" to change base, then pick "2" (feature-x, sorted after dev), then "y" to confirm PR
-_tmp_base=$(mktemp)
-stdout_base=$(printf 'y\n2\ny\n' | PATH="${MOCK_BIN2}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" pr 2>"$_tmp_base" || true)
-out_base=$(cat "$_tmp_base"); rm -f "$_tmp_base"
-gh_log2=$(cat "${MOCK_BIN2}/gh-calls.log" 2>/dev/null || echo "")
-assert_contains "base changed in gh call"  "--base feature-x"   "$gh_log2"
-# Verify .wt-meta was updated
-meta_val=$(grep "^base_branch=" "${WT_PATH_BASE}/.wt-meta" | cut -d= -f2)
-assert_eq "wt-meta updated with new base" "feature-x" "$meta_val"
-
-section "wt pr --yes — skips base branch prompt"
-rm -f "${MOCK_BIN2}/gh-calls.log"
-cd "$WT_PATH_BASE"
-# Reset .wt-meta base back to dev
-sed -i.bak "s/^base_branch=.*/base_branch=dev/" "${WT_PATH_BASE}/.wt-meta" && rm -f "${WT_PATH_BASE}/.wt-meta.bak"
-_tmp_yes=$(mktemp)
-PATH="${MOCK_BIN2}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" pr --yes 2>"$_tmp_yes" || true
-out_yes=$(cat "$_tmp_yes"); rm -f "$_tmp_yes"
-assert_not_contains "no change-base prompt with --yes" "change?" "$out_yes"
-gh_log3=$(cat "${MOCK_BIN2}/gh-calls.log" 2>/dev/null || echo "")
-assert_contains "uses original base with --yes" "--base dev" "$gh_log3"
-
-git -C "$REPO" worktree remove "$WT_PATH_BASE" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/base-change-test" 2>/dev/null || true
-rm -rf "$MOCK_BIN2" "$BARE2"
+if [[ "$1" == "pr" && "$2" == "view" ]]; then exit 1; fi
+if [[ "$1" == "pr" && "$2" == "create" ]]; then echo "https://github.com/test/test/pull/99"; fi
+MOCKEOF_HINT
+chmod +x "${MOCK_BIN_HINT}/gh"
+cd "$WT_PATH_HINT"
+_tmp_hint=$(mktemp)
+stdout_hint=$(printf 'y\n' | PATH="${MOCK_BIN_HINT}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" pr 2>"$_tmp_hint")
+out_hint=$(cat "$_tmp_hint"); rm -f "$_tmp_hint"
+assert_contains "shows retarget hint" "wt retarget" "$out_hint"
+assert_contains "PR created" "PR created" "$out_hint"
+git -C "$REPO" worktree remove "$WT_PATH_HINT" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/pr-hint-test" 2>/dev/null || true
+rm -rf "$MOCK_BIN_HINT" "$BARE_HINT"
 
 # ─── registry ────────────────────────────────────────────────────────────────
 
@@ -1212,36 +1003,7 @@ git -C "$REPO" branch -D "wt/untracked-yes-test" 2>/dev/null || true
 
 # ─── S2: wt finish --force skips PR-open block ───────────────────────────────
 
-section "S2: wt finish --force — skips PR-open check and finishes locally"
-cd "$REPO"
-git -C "$REPO" checkout -q dev
-WT_FORCE="${REPO}/.worktrees/finish-force-test"
-stdout_force=$(WT_REGISTRY="$registry_file" bash "$WT" new "finish force test" 2>/dev/null)
-assert_eq "created finish-force worktree" "$WT_FORCE" "$stdout_force"
-echo "force-work" > "${WT_FORCE}/force-work.txt"
-git -C "$WT_FORCE" add force-work.txt
-git -C "$WT_FORCE" commit -q -m "force finish test commit"
-# Mock gh to return OPEN
-MOCK_BIN_FORCE="${TMPROOT}/mock-bin-force"
-mkdir -p "$MOCK_BIN_FORCE"
-cat > "${MOCK_BIN_FORCE}/gh" << 'MOCKEOF_FORCE'
-#!/usr/bin/env bash
-if [[ "$1" == "pr" && "$2" == "view" ]]; then
-  echo "OPEN"
-fi
-MOCKEOF_FORCE
-chmod +x "${MOCK_BIN_FORCE}/gh"
-git -C "$REPO" checkout -q main
-cd "$WT_FORCE"
-_tmp_force=$(mktemp)
-stdout_fin_force=$(PATH="${MOCK_BIN_FORCE}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" finish --force --yes 2>"$_tmp_force") || true
-out_fin_force=$(cat "$_tmp_force"); rm -f "$_tmp_force"
-assert_contains "finish --force bypasses PR-open block" "Done!" "$out_fin_force"
-assert_eq "stdout is main path" "$REPO" "$stdout_fin_force"
-assert_dir_not_exists "worktree removed" "$WT_FORCE"
-branch_force=$(git -C "$REPO" rev-parse --verify "wt/finish-force-test" 2>/dev/null || echo "gone")
-assert_eq "branch deleted" "gone" "$branch_force"
-rm -rf "$MOCK_BIN_FORCE"
+# S2 removed — finish no longer checks PR state
 
 # ─── S3: fast-forward when third worktree holds base_branch ──────────────────
 
@@ -1357,56 +1119,7 @@ assert_contains "S4 second commit landed on dev" "s4 second commit" "$dev_log_s4
 git -C "$REPO" remote remove origin 2>/dev/null || true
 rm -rf "$BARE_S4"
 
-# ─── S5: wt sync — local base ahead of origin ────────────────────────────────
-
-section "S5: wt sync — rebases onto local base when ahead of origin"
-# Same parallel setup: two worktrees from X. First finishes (local dev → X→A,
-# origin stays at X). wt sync on second should rebase onto local dev (X→A),
-# not stale origin/dev (X), so the synced branch includes A.
-cd "$REPO"
-git -C "$REPO" checkout -q dev
-
-BARE_S5="${TMPROOT}/bare-s5.git"
-git -C "$REPO" clone --bare . "$BARE_S5" 2>/dev/null
-git -C "$REPO" remote add origin "$BARE_S5" 2>/dev/null \
-  || git -C "$REPO" remote set-url origin "$BARE_S5"
-git -C "$REPO" fetch origin dev 2>/dev/null
-
-WT_S5A="${REPO}/.worktrees/s5-first"
-WT_S5B="${REPO}/.worktrees/s5-second"
-WT_REGISTRY="$registry_file" bash "$WT" new "s5 first"  >/dev/null 2>&1
-WT_REGISTRY="$registry_file" bash "$WT" new "s5 second" >/dev/null 2>&1
-
-echo "s5-first-work" > "${WT_S5A}/s5-first.txt"
-git -C "$WT_S5A" add s5-first.txt
-git -C "$WT_S5A" commit -q -m "s5 first commit"
-
-echo "s5-second-work" > "${WT_S5B}/s5-second.txt"
-git -C "$WT_S5B" add s5-second.txt
-git -C "$WT_S5B" commit -q -m "s5 second commit"
-
-# Finish first — local dev advances to X→A; origin/dev stays at X
-cd "$WT_S5A"
-WT_REGISTRY="$registry_file" bash "$WT" finish --yes >/dev/null 2>&1
-cd "$REPO"
-
-# Sync second — should rebase onto local dev (X→A), not origin/dev (X)
-cd "$WT_S5B"
-_tmp_s5=$(mktemp)
-WT_REGISTRY="$registry_file" bash "$WT" sync 2>"$_tmp_s5" || true
-out_s5=$(cat "$_tmp_s5"); rm -f "$_tmp_s5"
-
-assert_contains "S5 sync succeeds" "Synced" "$out_s5"
-# The synced branch must include s5 first commit (from local dev) in its log
-branch_log_s5=$(git -C "$WT_S5B" log --oneline 2>/dev/null || true)
-assert_contains "S5 synced branch includes first commit" "s5 first commit" "$branch_log_s5"
-
-# Cleanup
-cd "$REPO"
-git -C "$REPO" worktree remove "$WT_S5B" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/s5-second" 2>/dev/null || true
-git -C "$REPO" remote remove origin 2>/dev/null || true
-rm -rf "$BARE_S5"
+# S5 removed — sync no longer fetches from origin (local merge only)
 
 
 # ─── M1: slugify strips leading hyphens ──────────────────────────────────────
@@ -1490,43 +1203,7 @@ git -C "$RT_PROJ" branch -D "wt/excl-test" 2>/dev/null || true
 
 # ─── M4: cmd_pr picker — no remote branches shows single warning ──────────────
 
-section "M4: wt pr — no remote branches shows exactly one warning (not double)"
-M4_PROJ="${TMPROOT}/m4-proj"
-mkdir -p "$M4_PROJ"
-git -C "$M4_PROJ" init -q -b main
-git -C "$M4_PROJ" config user.email "test@test.com"
-git -C "$M4_PROJ" config user.name "Test"
-echo "init" > "$M4_PROJ/README.md"
-git -C "$M4_PROJ" add README.md
-git -C "$M4_PROJ" commit -q -m "initial"
-# Empty bare remote — has no branches so the remote branch list will be empty
-M4_BARE="${TMPROOT}/m4-bare.git"
-git init --bare -q "$M4_BARE"
-cd "$M4_PROJ"
-M4_WT="${M4_PROJ}/.worktrees/m4-picker-test"
-WT_REGISTRY="$registry_file" bash "$WT" new "m4 picker test" 2>/dev/null
-echo "work" > "${M4_WT}/work.txt"
-git -C "$M4_WT" add work.txt
-git -C "$M4_WT" commit -q -m "m4 work"
-git -C "$M4_WT" remote add origin "file://${M4_BARE}"
-M4_MOCK="${TMPROOT}/m4-mock-bin"
-mkdir -p "$M4_MOCK"
-# gh: no existing PR on view, return a URL on create
-cat > "${M4_MOCK}/gh" << 'M4_MOCKEOF'
-#!/usr/bin/env bash
-if [[ "$1" == "pr" && "$2" == "view" ]]; then exit 1; fi
-if [[ "$1" == "pr" && "$2" == "create" ]]; then echo "https://github.com/test/pr/1"; fi
-M4_MOCKEOF
-chmod +x "${M4_MOCK}/gh"
-cd "$M4_WT"
-# Answer 'y' to "change base?" — picker finds no remote branches, should warn once
-out_m4=$(printf 'y\n' | PATH="${M4_MOCK}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" pr 2>&1 || true)
-assert_contains     "shows no-remote-branches warning" "No remote branches found" "$out_m4"
-assert_not_contains "does not also show invalid-choice" "Invalid choice"          "$out_m4"
-cd "$M4_PROJ"
-git -C "$M4_PROJ" worktree remove "$M4_WT" --force 2>/dev/null || true
-git -C "$M4_PROJ" branch -D "wt/m4-picker-test" 2>/dev/null || true
-rm -rf "$M4_MOCK" "$M4_BARE"
+# M4 removed — interactive picker removed from wt pr
 
 # ─── S1: wt new from worktree shows base branch from main checkout ────────────
 
@@ -1608,7 +1285,7 @@ git -C "$REPO" worktree remove "$WT_CONF" --force 2>/dev/null || true
 git -C "$REPO" branch -D "wt/conf-test" 2>/dev/null || true
 git -C "$REPO" checkout -q dev
 
-section "T1b: wt sync — rebase conflict leaves rebase paused"
+section "T1b: wt sync — merge conflict leaves merge paused"
 cd "$REPO"
 git -C "$REPO" checkout -q dev
 WT_SYNC_CONF="${REPO}/.worktrees/sync-conf-test"
@@ -1622,10 +1299,11 @@ git -C "$REPO" add sync-conflict.txt
 git -C "$REPO" commit -q -m "base sync conflict commit"
 cd "$WT_SYNC_CONF"
 out_t1b=$(WT_REGISTRY="$registry_file" bash "$WT" sync 2>&1) || true
-assert_contains "sync reports conflict paused" "conflict" "$out_t1b"
+assert_contains "sync reports merge conflict" "conflict" "$out_t1b"
+assert_contains "sync shows merge continue instruction" "git merge --continue" "$out_t1b"
 assert_dir_exists "worktree preserved after sync conflict" "$WT_SYNC_CONF"
-# Cleanup: abort rebase, remove files
-git -C "$WT_SYNC_CONF" rebase --abort 2>/dev/null || true
+# Cleanup: abort merge, remove files
+git -C "$WT_SYNC_CONF" merge --abort 2>/dev/null || true
 cd "$REPO"
 git -C "$REPO" checkout -q dev
 git -C "$REPO" rm -qf sync-conflict.txt 2>/dev/null || true
@@ -1755,49 +1433,12 @@ assert_eq "branch deleted after force finish" "gone" "$branch_t4b"
 
 # ─── Chunk 6: --dry-run ───────────────────────────────────────────────────────
 
-section "T6a: wt finish --dry-run — shows plan, worktree intact, no stdout"
-cd "$REPO"
-git -C "$REPO" checkout -q dev
-WT_T6A="${REPO}/.worktrees/t6a-test"
-WT_REGISTRY="$registry_file" bash "$WT" new "t6a test" 2>/dev/null
-echo "t6a-work" > "${WT_T6A}/t6a.txt"
-git -C "$WT_T6A" add t6a.txt
-git -C "$WT_T6A" commit -q -m "t6a test commit"
-cd "$WT_T6A"
-_tmp_t6a=$(mktemp)
-stdout_t6a=$(WT_REGISTRY="$registry_file" bash "$WT" finish --dry-run 2>"$_tmp_t6a") || true
-out_t6a=$(cat "$_tmp_t6a"); rm -f "$_tmp_t6a"
-assert_contains "finish dry-run mentions [dry-run]" "[dry-run]" "$out_t6a"
-assert_eq "finish dry-run produces no stdout" "" "$stdout_t6a"
-assert_dir_exists "worktree intact after finish dry-run" "$WT_T6A"
-branch_t6a=$(git -C "$REPO" rev-parse --verify "wt/t6a-test" 2>/dev/null || echo "gone")
-assert_not_contains "branch intact after finish dry-run" "gone" "$branch_t6a"
-cd "$REPO"
-git -C "$REPO" worktree remove "$WT_T6A" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/t6a-test" 2>/dev/null || true
-
-section "T6b: wt abandon --dry-run — shows plan, worktree intact"
-cd "$REPO"
-git -C "$REPO" checkout -q dev
-WT_T6B="${REPO}/.worktrees/t6b-test"
-WT_REGISTRY="$registry_file" bash "$WT" new "t6b test" 2>/dev/null
-echo "t6b-work" > "${WT_T6B}/t6b.txt"
-git -C "$WT_T6B" add t6b.txt
-git -C "$WT_T6B" commit -q -m "t6b test commit"
-cd "$WT_T6B"
-_tmp_t6b=$(mktemp)
-WT_REGISTRY="$registry_file" bash "$WT" abandon --dry-run 2>"$_tmp_t6b" || true
-out_t6b=$(cat "$_tmp_t6b"); rm -f "$_tmp_t6b"
-assert_contains "abandon dry-run mentions [dry-run]" "[dry-run]" "$out_t6b"
-assert_dir_exists "worktree intact after drop dry-run" "$WT_T6B"
-branch_t6b=$(git -C "$REPO" rev-parse --verify "wt/t6b-test" 2>/dev/null || echo "gone")
-assert_not_contains "branch intact after drop dry-run" "gone" "$branch_t6b"
-cd "$REPO"
-git -C "$REPO" worktree remove "$WT_T6B" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/t6b-test" 2>/dev/null || true
+# T6a, T6b removed — --dry-run removed from finish and abandon
 
 section "T6c: wt doctor --dry-run — reports orphan, does not delete"
 cd "$REPO"
+# Ensure REPO is in the registry (may have been unregistered by prior cleanup)
+grep -qxF "$REPO" "$registry_file" 2>/dev/null || echo "$REPO" >> "$registry_file"
 git -C "$REPO" branch wt/dry-orphan 2>/dev/null
 _tmp_t6c=$(mktemp)
 WT_REGISTRY="$registry_file" bash "$WT" doctor --dry-run > "$_tmp_t6c" 2>&1 < /dev/null || true
@@ -1808,39 +1449,7 @@ branch_t6c=$(git -C "$REPO" rev-parse --verify "wt/dry-orphan" 2>/dev/null || ec
 assert_not_contains "orphan branch preserved with --dry-run" "gone" "$branch_t6c"
 git -C "$REPO" branch -D "wt/dry-orphan" 2>/dev/null || true
 
-section "T6d: wt finish --dry-run + uncommitted changes → errors before dry-run"
-cd "$REPO"
-git -C "$REPO" checkout -q dev
-WT_T6D="${REPO}/.worktrees/t6d-test"
-WT_REGISTRY="$registry_file" bash "$WT" new "t6d test" 2>/dev/null
-echo "uncommitted" >> "${WT_T6D}/README.md"
-cd "$WT_T6D"
-out_t6d=$(WT_REGISTRY="$registry_file" bash "$WT" finish --dry-run 2>&1 || true)
-assert_contains "finish dry-run still errors on uncommitted" "Uncommitted changes" "$out_t6d"
-assert_not_contains "finish dry-run output absent when erroring early" "[dry-run]" "$out_t6d"
-git -C "$WT_T6D" checkout -- README.md
-cd "$REPO"
-git -C "$REPO" worktree remove "$WT_T6D" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/t6d-test" 2>/dev/null || true
-
-section "T6e: wt finish --dry-run + untracked files → shows plan, does not prompt"
-cd "$REPO"
-git -C "$REPO" checkout -q dev
-WT_T6E="${REPO}/.worktrees/t6e-test"
-WT_REGISTRY="$registry_file" bash "$WT" new "t6e test" 2>/dev/null
-echo "t6e-work" > "${WT_T6E}/t6e.txt"
-git -C "$WT_T6E" add t6e.txt
-git -C "$WT_T6E" commit -q -m "t6e test commit"
-# Add an untracked file — dry-run should show plan, not silently abort
-echo "precious" > "${WT_T6E}/untracked-t6e.txt"
-cd "$WT_T6E"
-out_t6e=$(WT_REGISTRY="$registry_file" bash "$WT" finish --dry-run 2>&1 < /dev/null || true)
-assert_contains "finish dry-run with untracked shows plan" "[dry-run]" "$out_t6e"
-assert_contains "finish dry-run with untracked warns about loss" "ntracked" "$out_t6e"
-assert_dir_exists "worktree intact after finish dry-run with untracked" "$WT_T6E"
-cd "$REPO"
-git -C "$REPO" worktree remove "$WT_T6E" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/t6e-test" 2>/dev/null || true
+# T6d, T6e removed — --dry-run removed from finish and abandon
 
 # ─── Chunk 7: doctor .wt-meta repair ─────────────────────────────────────────
 
@@ -1938,125 +1547,45 @@ else
   fail "bin/wt missing bash version check"
 fi
 
-# ─── wt update ───────────────────────────────────────────────────────────────
+# ─── wt sync — detailed merge tests (isolated project) ───────────────────────
 
-UPD_PROJ="${TMPROOT}/update-proj"
-mkdir -p "$UPD_PROJ"
-git -C "$UPD_PROJ" init -q -b main
-git -C "$UPD_PROJ" config user.email "test@test.com"
-git -C "$UPD_PROJ" config user.name "Test"
-echo "init" > "$UPD_PROJ/README.md"
-git -C "$UPD_PROJ" add README.md
-git -C "$UPD_PROJ" commit -q -m "initial"
-git -C "$UPD_PROJ" checkout -q -b dev
-echo "dev-content" > "$UPD_PROJ/dev.txt"
-git -C "$UPD_PROJ" add dev.txt
-git -C "$UPD_PROJ" commit -q -m "dev commit"
-git -C "$UPD_PROJ" checkout -q main
+SYNC_PROJ="${TMPROOT}/sync-detail-proj"
+mkdir -p "$SYNC_PROJ"
+git -C "$SYNC_PROJ" init -q -b main
+git -C "$SYNC_PROJ" config user.email "test@test.com"
+git -C "$SYNC_PROJ" config user.name "Test"
+echo "init" > "$SYNC_PROJ/README.md"
+git -C "$SYNC_PROJ" add README.md
+git -C "$SYNC_PROJ" commit -q -m "initial"
+git -C "$SYNC_PROJ" checkout -q -b dev
+echo "dev-content" > "$SYNC_PROJ/dev.txt"
+git -C "$SYNC_PROJ" add dev.txt
+git -C "$SYNC_PROJ" commit -q -m "dev commit"
+git -C "$SYNC_PROJ" checkout -q main
 
-section "wt update — error from main checkout"
-cd "$UPD_PROJ"
-out_upd_main=$(wt update 2>&1 || true)
-assert_contains "errors when not in a worktree" "main checkout" "$out_upd_main"
-
-section "wt update — already up to date"
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" checkout -q dev
-UPD_WT_UTD="${UPD_PROJ}/.worktrees/upd-utd"
-wt new "upd utd" 2>/dev/null
-cd "$UPD_WT_UTD"
-out_utd=$(wt update 2>&1)
-assert_contains "already up to date" "Already up to date" "$out_utd"
-stdout_utd=$(wt update 2>/dev/null)
-assert_eq "no stdout when up to date" "" "$stdout_utd"
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" worktree remove "$UPD_WT_UTD" --force 2>/dev/null || true
-git -C "$UPD_PROJ" branch -D "wt/upd-utd" 2>/dev/null || true
-git -C "$UPD_PROJ" checkout -q main
-
-section "wt update — clean merge from diverged base"
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" checkout -q dev
-UPD_WT_MERGE="${UPD_PROJ}/.worktrees/upd-merge"
-wt new "upd merge" 2>/dev/null
-echo "wt-work" > "${UPD_WT_MERGE}/wt-work.txt"
-git -C "$UPD_WT_MERGE" add wt-work.txt
-git -C "$UPD_WT_MERGE" commit -q -m "worktree work"
-git -C "$UPD_PROJ" checkout -q dev
-echo "base-advance" > "${UPD_PROJ}/base-advance.txt"
-git -C "$UPD_PROJ" add base-advance.txt
-git -C "$UPD_PROJ" commit -q -m "base advanced"
-git -C "$UPD_PROJ" checkout -q main
-cd "$UPD_WT_MERGE"
-out_merge=$(wt update 2>&1)
-assert_contains "reports success" "Merged" "$out_merge"
-assert_contains "base commit reachable" "base advanced" "$(git -C "$UPD_WT_MERGE" log --oneline -5)"
-assert_contains "worktree commit preserved" "worktree work" "$(git -C "$UPD_WT_MERGE" log --oneline -5)"
-assert_contains "merge commit present" "Merge" "$(git -C "$UPD_WT_MERGE" log --oneline -5)"
-stdout_merge=$(wt update 2>/dev/null)
-assert_eq "no stdout from update" "" "$stdout_merge"
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" worktree remove "$UPD_WT_MERGE" --force 2>/dev/null || true
-git -C "$UPD_PROJ" branch -D "wt/upd-merge" 2>/dev/null || true
-git -C "$UPD_PROJ" checkout -q main
-
-section "wt update — blocks on uncommitted tracked changes"
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" checkout -q dev
-UPD_WT_DIRTY="${UPD_PROJ}/.worktrees/upd-dirty"
-wt new "upd dirty" 2>/dev/null
-echo "dirty" >> "${UPD_WT_DIRTY}/README.md"
-cd "$UPD_WT_DIRTY"
-out_dirty=$(wt update 2>&1 || true)
-assert_contains "blocks on uncommitted changes" "Uncommitted changes" "$out_dirty"
-git -C "$UPD_WT_DIRTY" checkout -- README.md
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" worktree remove "$UPD_WT_DIRTY" --force 2>/dev/null || true
-git -C "$UPD_PROJ" branch -D "wt/upd-dirty" 2>/dev/null || true
-git -C "$UPD_PROJ" checkout -q main
-
-section "wt update — untracked files do not block"
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" checkout -q dev
-UPD_WT_UNTRACK="${UPD_PROJ}/.worktrees/upd-untrack"
-wt new "upd untrack" 2>/dev/null
-git -C "$UPD_PROJ" checkout -q dev
-echo "base-new-file" > "${UPD_PROJ}/base-new2.txt"
-git -C "$UPD_PROJ" add base-new2.txt
-git -C "$UPD_PROJ" commit -q -m "base new file"
-git -C "$UPD_PROJ" checkout -q main
-echo "untracked" > "${UPD_WT_UNTRACK}/untracked.txt"
-cd "$UPD_WT_UNTRACK"
-out_untrack=$(wt update 2>&1)
-assert_contains "succeeds with untracked files present" "Merged" "$out_untrack"
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" worktree remove "$UPD_WT_UNTRACK" --force 2>/dev/null || true
-git -C "$UPD_PROJ" branch -D "wt/upd-untrack" 2>/dev/null || true
-git -C "$UPD_PROJ" checkout -q main
-
-section "wt update — conflict detected, files listed"
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" checkout -q dev
+section "wt sync — conflict detected, files listed"
+cd "$SYNC_PROJ"
+git -C "$SYNC_PROJ" checkout -q dev
 # Add multi-line data.txt to dev for auto-merge test
-printf "line1\nline2\nline3\n" > "${UPD_PROJ}/data.txt"
-git -C "$UPD_PROJ" add data.txt
-git -C "$UPD_PROJ" commit -q -m "add data.txt"
-UPD_WT_CONFLICT="${UPD_PROJ}/.worktrees/upd-conflict"
-wt new "upd conflict" 2>/dev/null
+printf "line1\nline2\nline3\n" > "${SYNC_PROJ}/data.txt"
+git -C "$SYNC_PROJ" add data.txt
+git -C "$SYNC_PROJ" commit -q -m "add data.txt"
+SYNC_WT_CONFLICT="${SYNC_PROJ}/.worktrees/sync-conflict"
+wt new "sync conflict" 2>/dev/null
 # Worktree: change README.md (conflict) + append to data.txt (auto-merge)
-echo "worktree-change" > "${UPD_WT_CONFLICT}/README.md"
-printf "line1\nline2\nline3\nwt-appended\n" > "${UPD_WT_CONFLICT}/data.txt"
-git -C "$UPD_WT_CONFLICT" add README.md data.txt
-git -C "$UPD_WT_CONFLICT" commit -q -m "wt changed readme"
+echo "worktree-change" > "${SYNC_WT_CONFLICT}/README.md"
+printf "line1\nline2\nline3\nwt-appended\n" > "${SYNC_WT_CONFLICT}/data.txt"
+git -C "$SYNC_WT_CONFLICT" add README.md data.txt
+git -C "$SYNC_WT_CONFLICT" commit -q -m "wt changed readme"
 # Base: change README.md (conflict) + prepend to data.txt (auto-merge)
-git -C "$UPD_PROJ" checkout -q dev
-echo "base-change" > "${UPD_PROJ}/README.md"
-printf "base-prepended\nline1\nline2\nline3\n" > "${UPD_PROJ}/data.txt"
-git -C "$UPD_PROJ" add README.md data.txt
-git -C "$UPD_PROJ" commit -q -m "base changed readme"
-git -C "$UPD_PROJ" checkout -q main
-cd "$UPD_WT_CONFLICT"
-out_conflict=$(wt update 2>&1 || true)
+git -C "$SYNC_PROJ" checkout -q dev
+echo "base-change" > "${SYNC_PROJ}/README.md"
+printf "base-prepended\nline1\nline2\nline3\n" > "${SYNC_PROJ}/data.txt"
+git -C "$SYNC_PROJ" add README.md data.txt
+git -C "$SYNC_PROJ" commit -q -m "base changed readme"
+git -C "$SYNC_PROJ" checkout -q main
+cd "$SYNC_WT_CONFLICT"
+out_conflict=$(wt sync 2>&1 || true)
 assert_contains "reports conflict" "conflict" "$out_conflict"
 assert_contains "lists conflicted file" "README.md" "$out_conflict"
 assert_contains "shows conflict line number" "README.md:1" "$out_conflict"
@@ -2066,53 +1595,53 @@ assert_contains "lists auto-merged file" "data.txt" "$out_conflict"
 assert_contains "shows HEAD commit subject" "wt changed readme" "$out_conflict"
 assert_contains "shows base commit subject" "base changed readme" "$out_conflict"
 assert_contains "shows merge continue instruction" "git merge --continue" "$out_conflict"
-git -C "$UPD_WT_CONFLICT" merge --abort 2>/dev/null || true
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" worktree remove "$UPD_WT_CONFLICT" --force 2>/dev/null || true
-git -C "$UPD_PROJ" branch -D "wt/upd-conflict" 2>/dev/null || true
-git -C "$UPD_PROJ" checkout -q main
+git -C "$SYNC_WT_CONFLICT" merge --abort 2>/dev/null || true
+cd "$SYNC_PROJ"
+git -C "$SYNC_PROJ" worktree remove "$SYNC_WT_CONFLICT" --force 2>/dev/null || true
+git -C "$SYNC_PROJ" branch -D "wt/sync-conflict" 2>/dev/null || true
+git -C "$SYNC_PROJ" checkout -q main
 
-section "wt update — errors when base branch not found locally"
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" checkout -q -b temp-base
-echo "temp" > "${UPD_PROJ}/temp.txt"
-git -C "$UPD_PROJ" add temp.txt
-git -C "$UPD_PROJ" commit -q -m "temp base commit"
-UPD_WT_NOREF="${UPD_PROJ}/.worktrees/upd-noref"
-wt new "upd noref" 2>/dev/null
-git -C "$UPD_PROJ" checkout -q main
-git -C "$UPD_PROJ" branch -D temp-base
-cd "$UPD_WT_NOREF"
-out_noref=$(wt update 2>&1 || true)
+section "wt sync — errors when base branch not found locally"
+cd "$SYNC_PROJ"
+git -C "$SYNC_PROJ" checkout -q -b temp-base
+echo "temp" > "${SYNC_PROJ}/temp.txt"
+git -C "$SYNC_PROJ" add temp.txt
+git -C "$SYNC_PROJ" commit -q -m "temp base commit"
+SYNC_WT_NOREF="${SYNC_PROJ}/.worktrees/sync-noref"
+wt new "sync noref" 2>/dev/null
+git -C "$SYNC_PROJ" checkout -q main
+git -C "$SYNC_PROJ" branch -D temp-base
+cd "$SYNC_WT_NOREF"
+out_noref=$(wt sync 2>&1 || true)
 assert_contains "errors on missing local base branch" "not found locally" "$out_noref"
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" worktree remove "$UPD_WT_NOREF" --force 2>/dev/null || true
-git -C "$UPD_PROJ" branch -D "wt/upd-noref" 2>/dev/null || true
+cd "$SYNC_PROJ"
+git -C "$SYNC_PROJ" worktree remove "$SYNC_WT_NOREF" --force 2>/dev/null || true
+git -C "$SYNC_PROJ" branch -D "wt/sync-noref" 2>/dev/null || true
 
-section "wt update — blocks when merge already in progress"
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" checkout -q dev
-UPD_WT_INPROG="${UPD_PROJ}/.worktrees/upd-inprog"
-wt new "upd inprog" 2>/dev/null
-echo "wt-readme" > "${UPD_WT_INPROG}/README.md"
-git -C "$UPD_WT_INPROG" add README.md
-git -C "$UPD_WT_INPROG" commit -q -m "wt readme"
-git -C "$UPD_PROJ" checkout -q dev
-echo "dev-readme" > "${UPD_PROJ}/README.md"
-git -C "$UPD_PROJ" add README.md
-git -C "$UPD_PROJ" commit -q -m "dev readme"
-git -C "$UPD_PROJ" checkout -q main
-cd "$UPD_WT_INPROG"
+section "wt sync — blocks when merge already in progress"
+cd "$SYNC_PROJ"
+git -C "$SYNC_PROJ" checkout -q dev
+SYNC_WT_INPROG="${SYNC_PROJ}/.worktrees/sync-inprog"
+wt new "sync inprog" 2>/dev/null
+echo "wt-readme" > "${SYNC_WT_INPROG}/README.md"
+git -C "$SYNC_WT_INPROG" add README.md
+git -C "$SYNC_WT_INPROG" commit -q -m "wt readme"
+git -C "$SYNC_PROJ" checkout -q dev
+echo "dev-readme" > "${SYNC_PROJ}/README.md"
+git -C "$SYNC_PROJ" add README.md
+git -C "$SYNC_PROJ" commit -q -m "dev readme"
+git -C "$SYNC_PROJ" checkout -q main
+cd "$SYNC_WT_INPROG"
 git merge dev 2>/dev/null || true
-out_inprog=$(wt update 2>&1 || true)
+out_inprog=$(wt sync 2>&1 || true)
 assert_contains "blocks on in-progress merge" "already in progress" "$out_inprog"
-git -C "$UPD_WT_INPROG" merge --abort 2>/dev/null || true
-cd "$UPD_PROJ"
-git -C "$UPD_PROJ" worktree remove "$UPD_WT_INPROG" --force 2>/dev/null || true
-git -C "$UPD_PROJ" branch -D "wt/upd-inprog" 2>/dev/null || true
-git -C "$UPD_PROJ" checkout -q main
+git -C "$SYNC_WT_INPROG" merge --abort 2>/dev/null || true
+cd "$SYNC_PROJ"
+git -C "$SYNC_PROJ" worktree remove "$SYNC_WT_INPROG" --force 2>/dev/null || true
+git -C "$SYNC_PROJ" branch -D "wt/sync-inprog" 2>/dev/null || true
+git -C "$SYNC_PROJ" checkout -q main
 
-# ─── finish/pr — squash path after wt update ─────────────────────────────────
+# ─── finish/pr — squash path after wt sync ──────────────────────────────────
 # Isolated project so state doesn't pollute main REPO tests.
 SQ_PROJ="${TMPROOT}/sq-proj"
 mkdir -p "$SQ_PROJ"
@@ -2128,7 +1657,7 @@ git -C "$SQ_PROJ" add dev.txt
 git -C "$SQ_PROJ" commit -q -m "dev commit"
 git -C "$SQ_PROJ" checkout -q main
 
-section "wt finish — squash merge after wt update"
+section "wt finish — squash merge after wt sync"
 cd "$SQ_PROJ"
 git -C "$SQ_PROJ" checkout -q dev
 SQ_WT="${SQ_PROJ}/.worktrees/sq-test-task"
@@ -2144,13 +1673,13 @@ git -C "$SQ_PROJ" add base-advance.txt
 git -C "$SQ_PROJ" commit -q -m "base advanced"
 git -C "$SQ_PROJ" checkout -q main  # leave dev free for ff
 dev_sq_before=$(git -C "$SQ_PROJ" rev-parse dev)
-# wt update → merge commit
+# wt sync → merge commit
 cd "$SQ_WT"
-wt update 2>/dev/null
+wt sync 2>/dev/null
 merge_check=$(git -C "$SQ_WT" rev-list --merges "dev..HEAD" | head -1)
 [[ -n "$merge_check" ]] \
-  && pass "sanity: merge commit present after wt update" \
-  || fail "sanity: no merge commit found after wt update"
+  && pass "sanity: merge commit present after wt sync" \
+  || fail "sanity: no merge commit found after wt sync"
 # wt finish --yes → squash path
 _tmp_sq=$(mktemp)
 stdout_sq=$(wt finish --yes 2>"$_tmp_sq")
@@ -2173,7 +1702,7 @@ assert_file_exists    "wt-work.txt landed on dev"            "${SQ_PROJ}/wt-work
 assert_file_exists    "base-advance.txt landed on dev"       "${SQ_PROJ}/base-advance.txt"
 git -C "$SQ_PROJ" checkout -q main
 
-section "wt finish — squash pre-flight error when base advanced after update"
+section "wt finish — squash pre-flight error when base advanced after sync"
 cd "$SQ_PROJ"
 git -C "$SQ_PROJ" checkout -q dev
 SQ_PRE_WT="${SQ_PROJ}/.worktrees/sq-preflight-test"
@@ -2187,10 +1716,10 @@ echo "base-pf1" > "${SQ_PROJ}/base-pf1.txt"
 git -C "$SQ_PROJ" add base-pf1.txt
 git -C "$SQ_PROJ" commit -q -m "base pf advance 1"
 git -C "$SQ_PROJ" checkout -q main
-# wt update → merge (base is now ancestor of HEAD)
+# wt sync → merge (base is now ancestor of HEAD)
 cd "$SQ_PRE_WT"
-wt update 2>/dev/null
-# Advance dev AGAIN after update → base is no longer ancestor of HEAD
+wt sync 2>/dev/null
+# Advance dev AGAIN after sync → base is no longer ancestor of HEAD
 git -C "$SQ_PROJ" checkout -q dev
 echo "base-pf2" > "${SQ_PROJ}/base-pf2.txt"
 git -C "$SQ_PROJ" add base-pf2.txt
@@ -2201,7 +1730,7 @@ cd "$SQ_PRE_WT"
 _tmp_sq_pre=$(mktemp)
 wt finish --yes 2>"$_tmp_sq_pre" || true
 out_sq_pre=$(cat "$_tmp_sq_pre"); rm -f "$_tmp_sq_pre"
-assert_contains   "squash pre-flight shows wt update instruction" "wt update" "$out_sq_pre"
+assert_contains   "squash pre-flight shows wt sync instruction" "wt sync" "$out_sq_pre"
 assert_dir_exists "sq preflight worktree preserved on error"       "$SQ_PRE_WT"
 # Cleanup
 cd "$SQ_PROJ"
@@ -2237,9 +1766,9 @@ echo "dev-advance" > "${SQ_PR_PROJ}/dev-advance.txt"
 git -C "$SQ_PR_PROJ" add dev-advance.txt
 git -C "$SQ_PR_PROJ" commit -q -m "dev advanced"
 git -C "$SQ_PR_PROJ" checkout -q main
-# wt update → merge commit
+# wt sync → merge commit
 cd "$SQ_PR_WT"
-wt update 2>/dev/null
+wt sync 2>/dev/null
 # Mock gh
 SQ_PR_MOCK="${TMPROOT}/sq-pr-mock"
 mkdir -p "$SQ_PR_MOCK"
