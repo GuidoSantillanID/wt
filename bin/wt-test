@@ -279,7 +279,7 @@ git -C "$WT_PATH_FF" commit -q -m "ff commit"
 git -C "$REPO" checkout -q main
 cd "$WT_PATH_FF"
 _tmp_ff=$(mktemp)
-stdout_ff=$(printf "y\n" | wt finish 2>"$_tmp_ff")
+stdout_ff=$(wt finish < /dev/null 2>"$_tmp_ff")
 out_ff=$(cat "$_tmp_ff"); rm -f "$_tmp_ff"
 assert_contains       "rebase reported"          "Rebase successful" "$out_ff"
 assert_contains       "fast-forward reported"    "Fast-forward" "$out_ff"
@@ -305,7 +305,7 @@ git -C "$WT_PATH" add fix.txt
 git -C "$WT_PATH" commit -q -m "fix sidebar overflow"
 
 _tmp_err=$(mktemp)
-stdout_done=$(printf "y\n" | wt finish 2>"$_tmp_err")
+stdout_done=$(wt finish < /dev/null 2>"$_tmp_err")
 out=$(cat "$_tmp_err"); rm -f "$_tmp_err"
 assert_contains       "finish reports success"         "Done!" "$out"
 assert_contains       "rebase performed"               "Rebase successful" "$out"
@@ -977,9 +977,9 @@ out_c3=$(printf "n\n" | WT_REGISTRY="$registry_file" bash "$WT" finish 2>&1) || 
 assert_contains "warns about untracked files" "Untracked files" "$out_c3"
 assert_dir_exists "worktree preserved when user declines" "$WT_UNTRACKED"
 assert_file_exists "untracked file preserved" "${WT_UNTRACKED}/untracked.txt"
-# Now say "y" to untracked warning and "y" to proceed — should finish
+# Now say "y" to untracked warning — no strategy prompt, finishes directly
 git -C "$REPO" checkout -q main
-out_c3y=$(printf "y\ny\n" | WT_REGISTRY="$registry_file" bash "$WT" finish 2>&1) || true
+out_c3y=$(printf "y\n" | WT_REGISTRY="$registry_file" bash "$WT" finish 2>&1) || true
 assert_contains "finish proceeds when user accepts" "Done!" "$out_c3y"
 assert_dir_not_exists "worktree removed after accept" "$WT_UNTRACKED"
 
@@ -1270,7 +1270,7 @@ git -C "$REPO" commit -q -m "base conflict commit"
 git -C "$REPO" checkout -q main
 cd "$WT_CONF"
 _tmp_t1a=$(mktemp)
-printf "y\n" | WT_REGISTRY="$registry_file" bash "$WT" finish 2>"$_tmp_t1a" || true
+WT_REGISTRY="$registry_file" bash "$WT" finish < /dev/null 2>"$_tmp_t1a" || true
 out_t1a=$(cat "$_tmp_t1a"); rm -f "$_tmp_t1a"
 assert_contains "finish aborts on conflict" "conflict" "$out_t1a"
 assert_dir_exists "worktree preserved after conflict" "$WT_CONF"
@@ -1335,7 +1335,7 @@ chmod +x "${MOCK_T1D}/gh"
 git -C "$REPO" checkout -q main
 cd "$WT_T1D"
 _tmp_t1d=$(mktemp)
-stdout_t1d=$(printf "y\n" | PATH="${MOCK_T1D}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" finish --force 2>"$_tmp_t1d") || true
+stdout_t1d=$(PATH="${MOCK_T1D}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" finish --force < /dev/null 2>"$_tmp_t1d") || true
 out_t1d=$(cat "$_tmp_t1d"); rm -f "$_tmp_t1d"
 assert_contains "finish --force with piped-y succeeds" "Done!" "$out_t1d"
 assert_eq "stdout is main worktree path" "$REPO" "$stdout_t1d"

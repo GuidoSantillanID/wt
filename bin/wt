@@ -8,7 +8,7 @@
 #
 # COMMANDS
 #   wt new "<description>"                      Create a worktree with auto-named branch
-#   wt finish [--yes|-y] [--force]              Integrate worktree into base (rebase or squash), clean up
+#   wt finish [--force]                          Integrate worktree into base (rebase or squash), clean up
 #   wt sync                                     Merge local base branch into worktree (LLM-friendly)
 #   wt retarget [branch]                        Change this worktree's base branch
 #   wt abandon [--yes|-y] [--force]             Abandon worktree without merging, clean up
@@ -202,7 +202,7 @@ wt — Git Worktree Lifecycle Tool
 
 USAGE
   wt new "<description>"                      Create a worktree with auto-named branch
-  wt finish [--yes|-y] [--force]              Integrate worktree into base (rebase or squash), clean up
+  wt finish [--force]                          Integrate worktree into base (rebase or squash), clean up
   wt sync                                     Merge local base branch into worktree (LLM-friendly)
   wt retarget [branch]                        Change this worktree's base branch
   wt abandon [--yes|-y] [--force]             Abandon worktree without merging, clean up
@@ -243,7 +243,7 @@ NOTES
   • Branch names: wt/<slug> (auto-generated from your description)
   • After `wt new`, your shell cd's into the new worktree
   • After `wt finish`, your shell cd's back to the main worktree
-  • Pass --yes / -y to wt finish, wt abandon, or wt pr to skip confirmation prompts
+  • Pass --yes / -y to wt abandon or wt pr to skip confirmation prompts
   • Pass --force to wt finish or wt abandon to override non-skippable safety gates
   • `wt sync` merges local base into the worktree — on conflict, shows LLM-friendly context
   • `wt pr` requires the GitHub CLI (gh) — https://cli.github.com
@@ -558,10 +558,10 @@ _pick_base_branch() {
 
 # wt finish — rebase worktree onto base, fast-forward, clean up
 cmd_finish() {
-  local auto_yes=0 force=0
+  local force=0
   for arg in "$@"; do
     case "$arg" in
-      --yes|-y)  auto_yes=1 ;;
+      --yes|-y)  : ;;  # accepted for backwards compatibility (no prompts to skip)
       --force)   force=1 ;;
     esac
   done
@@ -625,10 +625,6 @@ cmd_finish() {
       echo -e "  Run 'wt sync' first, then retry 'wt finish'." >&2
       exit 1
     fi
-    if (( auto_yes == 0 )); then
-      confirm "Squash-merge ${BOLD}${branch}${RESET} into ${BOLD}${base_branch}${RESET}?" \
-        || { info "Aborted."; exit 0; }
-    fi
     # Create a single squash commit: tree from HEAD (all changes), parent = base_branch only.
     local squash_commit
     squash_commit=$(git commit-tree "HEAD^{tree}" -p "$base_branch" -m "$description")
@@ -641,11 +637,6 @@ cmd_finish() {
   fi
 
   # Rebase path (no merge commits — clean linear history)
-  if (( auto_yes == 0 )); then
-    confirm "Rebase ${BOLD}${branch}${RESET} onto ${BOLD}${base_branch}${RESET} and fast-forward?" \
-      || { info "Aborted."; exit 0; }
-  fi
-
   if ! _rebase_onto_base "$base_branch" "$branch" --prefer-local; then
     git rebase --abort 2>/dev/null || true
     warn "Rebase conflict. Aborted."

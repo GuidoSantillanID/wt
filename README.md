@@ -125,25 +125,23 @@ Creates a new git worktree with an auto-named branch.
 - Registers the project automatically on first use
 - Prints a reminder to install dependencies if needed (worktrees don't share `node_modules`/`venv`)
 
-### `wt finish [--yes|-y] [--force]`
+### `wt finish [--force]`
 
-Integrates the worktree back into its base branch and cleans up.
+Integrates the worktree back into its base branch and cleans up. No confirmation prompts — the only interactive gate is untracked files (data loss warning).
 
-Pass `--yes` or `-y` to skip routine confirmation prompts (useful when running from scripts or Claude Code).
-
-Pass `--force` to override non-skippable safety gates (untracked files).
+Pass `--force` to override the untracked-files safety gate.
 
 **Strategy (auto-detected):**
 - **No merge commits** (clean history): rebases onto base and fast-forwards → linear history
 - **Merge commits present** (from `wt sync`): squash-merges into base → single commit on base, avoids re-encountering conflicts
 
-**Safety checks (in order):**
+**Steps (in order):**
 1. Verifies you're in a worktree (not the main checkout) — errors if not
-2. Aborts if there are tracked uncommitted changes — not skipped by `--yes` or `--force`
-3. **Non-skippable:** warns if there are untracked files (they will be permanently deleted) — prompts even with `--yes`; only `--force` bypasses
+2. Aborts if there are tracked uncommitted changes
+3. Warns if there are untracked files (they will be permanently deleted) — only `--force` bypasses
 4. Detects strategy (rebase vs squash) based on merge commits in `<base>..HEAD`
-   - **Squash path**: confirms `Squash-merge wt/<slug> into <base>?` — skipped by `--yes`. Requires base to be an ancestor of HEAD (i.e. `wt sync` was run). If base has new commits since the last `wt sync`, errors with a prompt to run `wt sync` again.
-   - **Rebase path**: confirms `Rebase wt/<slug> onto <base> and fast-forward?` — skipped by `--yes`. Fetches remote base (best-effort). Rebases — SIGINT-trapped; aborts cleanly on Ctrl+C; aborts and prints manual instructions on conflict.
+   - **Squash path**: requires base to be an ancestor of HEAD (i.e. `wt sync` was run). If base has new commits since the last `wt sync`, errors with a prompt to run `wt sync` again.
+   - **Rebase path**: fetches remote base (best-effort). Rebases — SIGINT-trapped; aborts cleanly on Ctrl+C; aborts and prints manual instructions on conflict.
 5. Fast-forwards base branch to the integrated tip (checks all worktrees, not just main)
 6. Removes worktree directory and branch
 7. Inside tmux: prints a reminder to close the current window
