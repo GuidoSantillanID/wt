@@ -3,7 +3,11 @@
 ## Running Tests
 
 ```bash
+# Integration tests (bash 4+ required)
 bash bin/wt-test < /dev/null
+
+# Completion helper unit tests (zsh required)
+zsh bin/wt-completion-test < /dev/null
 ```
 
 Redirect stdin from `/dev/null` to prevent interactive `confirm()` prompts from blocking the test runner.
@@ -12,9 +16,10 @@ Pass `--keep` to preserve the temp directory on failure for debugging:
 
 ```bash
 bash bin/wt-test --keep < /dev/null
+zsh bin/wt-completion-test --keep < /dev/null
 ```
 
-Tests require bash 4+ (macOS ships with bash 3.2 — install via `brew install bash`). CI runs on both macOS and Linux.
+Integration tests require bash 4+ (macOS ships with bash 3.2 — install via `brew install bash`). CI runs on both macOS and Linux.
 
 ## ShellCheck
 
@@ -23,6 +28,8 @@ All shell scripts must pass ShellCheck before merging:
 ```bash
 shellcheck bin/wt bin/wt-test
 ```
+
+`bin/wt-completion-test` and `config/wt-completion.zsh` are zsh scripts — ShellCheck does not cover them (it parses zsh as sh and produces false positives).
 
 Install: `brew install shellcheck` (macOS) or `apt-get install shellcheck` (Ubuntu). CI runs ShellCheck on every PR.
 

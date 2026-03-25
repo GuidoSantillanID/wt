@@ -1,0 +1,216 @@
+#!/usr/bin/env zsh
+# =============================================================================
+# wt-completion-test — Unit tests for config/wt-completion.zsh helpers
+# =============================================================================
+# Usage: zsh bin/wt-completion-test [--keep]
+#   --keep    Preserve the temp dir on failure (for debugging)
+#
+# Tests the data-gathering helpers (_wt_read_meta_field, _wt_list_branches)
+# in isolation. Does NOT test compadd wiring — that requires a live zsh
+# completion system and is verified manually.
+#
+# Run with stdin closed to match CI behavior:
+#   zsh bin/wt-completion-test < /dev/null
+# =============================================================================
+
+setopt err_exit no_unset pipe_fail
+
+COMPLETION_SCRIPT="${0:A:h}/../config/wt-completion.zsh"
+KEEP=0
+[[ "${1:-}" == "--keep" ]] && KEEP=1
+
+# ─── Colors ──────────────────────────────────────────────────────────────────
+
+if [[ -t 1 ]]; then
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+  CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+else
+  RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; RESET=''
+fi
+
+# ─── Test framework ──────────────────────────────────────────────────────────
+
+PASS=0; FAIL=0
+
+pass() { print -P "  ${GREEN}✓${RESET} $*"; (( PASS++ )) || true; }
+fail() { print -P "  ${RED}✗${RESET} $*"; (( FAIL++ )) || true; }
+section() { print -P "\n${BOLD}${CYAN}▸ $*${RESET}"; }
+
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [[ "$actual" == "$expected" ]]; then pass "$desc"
+  else
+    fail "$desc"
+    print -P "    expected: ${YELLOW}${expected}${RESET}"
+    print -P "    actual:   ${RED}${actual}${RESET}"
+  fi
+}
+
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then pass "$desc"
+  else
+    fail "$desc"
+    print -P "    expected to contain: ${YELLOW}${needle}${RESET}"
+    print -P "    actual: ${RED}${haystack}${RESET}"
+  fi
+}
+
+assert_not_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then pass "$desc"
+  else
+    fail "$desc"
+    print -P "    expected NOT to contain: ${YELLOW}${needle}${RESET}"
+    print -P "    actual: ${RED}${haystack}${RESET}"
+  fi
+}
+
+# ─── Setup ───────────────────────────────────────────────────────────────────
+
+TMPROOT=$(mktemp -d /tmp/wt-completion-test-XXXXXX)
+# Resolve symlinks (macOS /tmp → /private/tmp) so path comparisons work
+TMPROOT=$(cd "$TMPROOT" && pwd -P)
+
+cleanup() {
+  if (( FAIL > 0 )) && (( KEEP == 1 )); then
+    print -P "\n${YELLOW}--keep: temp dir preserved at ${TMPROOT}${RESET}"
+  else
+    rm -rf "$TMPROOT"
+  fi
+}
+trap cleanup EXIT
+
+# Create a project with two worktrees
+PROJECT="${TMPROOT}/my-project"
+WTS="${PROJECT}/.worktrees"
+
+mkdir -p "${WTS}/fix-auth"
+cat > "${WTS}/fix-auth/.wt-meta" <<'EOF'
+base_branch=main
+created=2026-01-01T00:00:00
+description=fix auth flow
+project=my-project
+project_root=/tmp/my-project
+slug=fix-auth
+branch=wt/fix-auth
+EOF
+
+mkdir -p "${WTS}/add-logging"
+cat > "${WTS}/add-logging/.wt-meta" <<'EOF'
+base_branch=main
+created=2026-01-02T00:00:00
+description=add structured logging
+project=my-project
+project_root=/tmp/my-project
+slug=add-logging
+branch=wt/add-logging
+EOF
+
+# Create a second project with one worktree
+PROJECT2="${TMPROOT}/other-project"
+WTS2="${PROJECT2}/.worktrees"
+
+mkdir -p "${WTS2}/fix-sidebar"
+cat > "${WTS2}/fix-sidebar/.wt-meta" <<'EOF'
+base_branch=main
+created=2026-01-03T00:00:00
+description=fix sidebar overflow
+project=other-project
+project_root=/tmp/other-project
+slug=fix-sidebar
+branch=wt/fix-sidebar
+EOF
+
+# Registry pointing to both projects
+REGISTRY="${TMPROOT}/registry"
+printf '%s\n%s\n' "$PROJECT" "$PROJECT2" > "$REGISTRY"
+
+# Empty registry for edge-case tests
+EMPTY_REGISTRY="${TMPROOT}/empty-registry"
+touch "$EMPTY_REGISTRY"
+
+print -P "${BOLD}wt-completion-test${RESET}"
+print -P "Script: ${CYAN}${COMPLETION_SCRIPT}${RESET}"
+
+# Source the completion script (suppresses compdef if compinit not loaded)
+autoload -Uz compinit 2>/dev/null || true
+# We don't run compinit — just need the helper functions, not compadd
+source "$COMPLETION_SCRIPT"
+
+# ─── Tests ───────────────────────────────────────────────────────────────────
+
+# ── _wt_read_meta_field ──────────────────────────────────────────────────────
+
+section "_wt_read_meta_field — reads a simple value"
+REPLY=''
+_wt_read_meta_field "${WTS}/fix-auth/.wt-meta" "branch"
+assert_eq "branch value" "wt/fix-auth" "$REPLY"
+
+section "_wt_read_meta_field — reads another key"
+REPLY=''
+_wt_read_meta_field "${WTS}/fix-auth/.wt-meta" "slug"
+assert_eq "slug value" "fix-auth" "$REPLY"
+
+section "_wt_read_meta_field — returns empty for missing key"
+REPLY=''
+_wt_read_meta_field "${WTS}/fix-auth/.wt-meta" "nonexistent_key" || true
+assert_eq "missing key returns empty" "" "$REPLY"
+
+section "_wt_read_meta_field — handles = in value (description)"
+REPLY=''
+# Add a meta file with = in the value
+mkdir -p "${TMPROOT}/eq-test"
+printf 'description=foo=bar\nbranch=wt/eq\n' > "${TMPROOT}/eq-test/.wt-meta"
+_wt_read_meta_field "${TMPROOT}/eq-test/.wt-meta" "description"
+assert_eq "= in value preserved" "foo=bar" "$REPLY"
+
+# ── _wt_list_branches ────────────────────────────────────────────────────────
+
+section "_wt_list_branches — returns branches from registered worktrees"
+branches=$(WT_REGISTRY="$REGISTRY" _wt_list_branches)
+assert_contains "fix-auth branch present"    "wt/fix-auth"    "$branches"
+assert_contains "add-logging branch present" "wt/add-logging" "$branches"
+assert_contains "fix-sidebar branch present" "wt/fix-sidebar" "$branches"
+
+section "_wt_list_branches — returns one branch per line"
+line_count=$(WT_REGISTRY="$REGISTRY" _wt_list_branches | wc -l | tr -d ' ')
+assert_eq "3 branches total" "3" "$line_count"
+
+section "_wt_list_branches — empty registry returns nothing"
+branches_empty=$(WT_REGISTRY="$EMPTY_REGISTRY" _wt_list_branches)
+assert_eq "empty result" "" "$branches_empty"
+
+section "_wt_list_branches — missing registry file returns nothing"
+branches_no_file=$(WT_REGISTRY="${TMPROOT}/no-such-file" _wt_list_branches)
+assert_eq "no registry file returns nothing" "" "$branches_no_file"
+
+section "_wt_list_branches — skips project dir with no .worktrees"
+NO_WTS="${TMPROOT}/bare-project"
+mkdir -p "$NO_WTS"
+PARTIAL_REGISTRY="${TMPROOT}/partial-registry"
+printf '%s\n%s\n' "$NO_WTS" "$PROJECT" > "$PARTIAL_REGISTRY"
+branches_partial=$(WT_REGISTRY="$PARTIAL_REGISTRY" _wt_list_branches)
+assert_contains "fix-auth still listed"           "wt/fix-auth"    "$branches_partial"
+assert_not_contains "bare project has no branches" "bare-project"  "$branches_partial"
+
+section "_wt_list_branches — skips corrupt .wt-meta (no branch key)"
+mkdir -p "${TMPROOT}/bad-project/.worktrees/bad-wt"
+printf 'slug=bad-wt\n' > "${TMPROOT}/bad-project/.worktrees/bad-wt/.wt-meta"
+BAD_REGISTRY="${TMPROOT}/bad-registry"
+printf '%s\n%s\n' "${TMPROOT}/bad-project" "$PROJECT" > "$BAD_REGISTRY"
+branches_bad=$(WT_REGISTRY="$BAD_REGISTRY" _wt_list_branches)
+assert_not_contains "corrupt meta skipped"  "bad-wt"     "$branches_bad"
+assert_contains     "good branches still listed" "wt/fix-auth" "$branches_bad"
+
+# ─── Summary ─────────────────────────────────────────────────────────────────
+
+echo ""
+total=$(( PASS + FAIL ))
+if (( FAIL == 0 )); then
+  print -P "${GREEN}${BOLD}All ${total} tests passed${RESET}"
+  exit 0
+else
+  print -P "${RED}${BOLD}${FAIL} of ${total} tests failed${RESET}"
+  exit 1
+fi

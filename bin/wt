@@ -51,6 +51,11 @@
 #        fi
 #      }
 #
+#   3. (Optional) Enable tab completion in zsh — add near the end of ~/.zshrc,
+#      after your framework init (oh-my-zsh, prezto) or compinit:
+#
+#      source ~/.local/bin/wt-completion.zsh
+#
 # REGISTRY
 #   Projects are auto-registered in ${XDG_CONFIG_HOME:-~/.config}/wt/projects
 #   when you run `wt new`. Override with WT_REGISTRY env var.

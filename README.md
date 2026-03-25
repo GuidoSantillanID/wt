@@ -54,6 +54,24 @@ wt() {
 }
 ```
 
+### Tab completion (zsh)
+
+`install.sh` also symlinks `config/wt-completion.zsh` to `~/.local/bin/wt-completion.zsh`. Add this near the **end** of `~/.zshrc`, after your framework init or `compinit`:
+
+```zsh
+# Oh My Zsh users: add after the `source $ZSH/oh-my-zsh.sh` line
+# Manual zshrc users: add after your `compinit` call
+source ~/.local/bin/wt-completion.zsh
+```
+
+This enables:
+- `wt <tab>` — subcommand list
+- `wt go <tab>` — branch names from all registered worktrees
+- `wt abandon <tab>` — branch names + flags
+- `wt finish/pr/doctor <tab>` — flags
+
+File I/O uses only zsh builtins (no `grep`/`cut` forks per worktree), so completion stays fast (~5ms) regardless of how many worktrees you have.
+
 ## Project registry
 
 `wt` tracks projects automatically. Run `wt new` from inside any git repo — it registers that project in `~/.config/wt/projects`. `wt list` and `wt doctor` read the registry; no manual config needed.

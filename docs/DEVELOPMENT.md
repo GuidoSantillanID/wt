@@ -122,6 +122,25 @@ The binary prints the target path on stdout. The wrapper captures it and calls `
 - Print nothing to stdout for `list`, `doctor`, `help`
 - Print all UI (info, success, warn, error) to **stderr**
 
+### Tab completion (`config/wt-completion.zsh`)
+
+A pure-zsh completion script. File I/O uses only builtins (no `grep`/`cut` forks per worktree). One subshell is spawned per completion call to capture the branch list — negligible cost (~1ms).
+
+**Why avoid external forks?** Completion runs on every `<tab>` press. Calling `command wt` would parse 1400+ lines of bash and fork `grep|head|cut` pipelines per worktree — ~100-250ms per keypress. Builtins bring this to ~5ms.
+
+**Two internal helpers:**
+
+```zsh
+_wt_read_meta_field FILE KEY  # sets REPLY via while-read + ${line#key=}, returns 1 if not found
+_wt_list_branches             # reads registry → scans .wt-meta files → prints branch names
+```
+
+**Registry and meta paths:** same as the main binary — `${WT_REGISTRY:-~/.config/wt/projects}` and `<project>/.worktrees/*/.wt-meta`. The `(N)` glob qualifier suppresses errors on missing directories.
+
+**`compdef` guard:** the helpers are always defined (so `bin/wt-completion-test` can source and test them), but `compdef _wt wt` runs only when `compdef` is available (i.e., after `compinit`).
+
+**Tests:** `bin/wt-completion-test` is a zsh script that creates real `.wt-meta` files in `/tmp` and tests the helpers directly. It does not test `compadd` wiring — that requires live completion state and is verified manually.
+
 ### Color/output system
 
 ```bash
