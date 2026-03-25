@@ -1837,6 +1837,58 @@ cd "$WT_NOTMUX_ABN"
 out_notmux_abn=$(unset TMUX; WT_REGISTRY="$registry_file" bash "$WT" abandon --yes 2>&1) || true
 assert_not_contains "abandon without TMUX does not show hint" "close this tmux window" "$out_notmux_abn"
 
+# ── wt go ────────────────────────────────────────────────────────────────────
+section "wt go — branch match"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+GO_WT="${REPO}/.worktrees/go-test-branch"
+wt new "go test branch" 2>/dev/null
+go_stdout=$(wt go "wt/go-test-branch" 2>/dev/null) || true
+assert_eq "stdout is worktree path (branch match)" "$GO_WT" "$go_stdout"
+
+section "wt go — slug match"
+go_slug_stdout=$(wt go "go-test-branch" 2>/dev/null) || true
+assert_eq "stdout is worktree path (slug match)" "$GO_WT" "$go_slug_stdout"
+
+section "wt go — no match"
+go_nomatch=$(wt go "nonexistent-slug" 2>&1 || true)
+assert_contains "no-match error message" "No worktree found" "$go_nomatch"
+
+section "wt go — no argument"
+go_noarg=$(wt go 2>&1 || true)
+assert_contains "no-arg shows usage" "Usage:" "$go_noarg"
+
+section "wt go — wt help includes wt go"
+help_out=$(wt help 2>&1)
+assert_contains "help lists wt go" "wt go" "$help_out"
+
+section "wt go — ambiguous slug across projects"
+GO_PROJ2="${TMPROOT}/projects/go-second-project"
+mkdir -p "$GO_PROJ2"
+git -C "$GO_PROJ2" init -q -b main
+git -C "$GO_PROJ2" config user.email "test@test.com"
+git -C "$GO_PROJ2" config user.name "Test"
+echo "init" > "$GO_PROJ2/README.md"
+git -C "$GO_PROJ2" add README.md
+git -C "$GO_PROJ2" commit -q -m "initial"
+git -C "$GO_PROJ2" checkout -q -b dev
+echo "dev" > "$GO_PROJ2/dev.txt"
+git -C "$GO_PROJ2" add dev.txt
+git -C "$GO_PROJ2" commit -q -m "dev commit"
+echo "$GO_PROJ2" >> "$registry_file"
+cd "$GO_PROJ2"
+wt new "go test branch" 2>/dev/null
+go_ambig=$(wt go "go-test-branch" 2>&1 || true)
+assert_contains "ambiguous match lists first path" "$GO_WT" "$go_ambig"
+assert_contains "ambiguous match error" "Ambiguous" "$go_ambig"
+# Cleanup
+git -C "$GO_PROJ2" worktree remove "${GO_PROJ2}/.worktrees/go-test-branch" --force 2>/dev/null || true
+git -C "$GO_PROJ2" branch -D "wt/go-test-branch" 2>/dev/null || true
+grep -v "^${GO_PROJ2}$" "$registry_file" > "${registry_file}.tmp" && mv "${registry_file}.tmp" "$registry_file"
+cd "$REPO"
+git -C "$REPO" worktree remove "$GO_WT" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/go-test-branch" 2>/dev/null || true
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 echo ""

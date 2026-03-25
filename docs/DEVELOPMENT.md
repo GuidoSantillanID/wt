@@ -104,7 +104,7 @@ A subprocess can't change the parent shell's working directory. The shell wrappe
 
 ```bash
 function wt() {
-  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" ]]; then
+  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" ]]; then
     local dir
     dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
   else
@@ -117,6 +117,7 @@ The binary prints the target path on stdout. The wrapper captures it and calls `
 
 **Go/Rust note:** This wrapper is required regardless of implementation language. The binary must:
 - Print worktree path to stdout on `new` (new worktree path)
+- Print worktree path to stdout on `go` (for cd-into)
 - Print main worktree path to stdout on `finish`/`drop` (for cd-back)
 - Print nothing to stdout for `list`, `doctor`, `help`
 - Print all UI (info, success, warn, error) to **stderr**

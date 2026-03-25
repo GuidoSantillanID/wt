@@ -15,6 +15,7 @@ wt abandon                        # abandon without merging
 wt pr                             # push branch + open GitHub PR
 wt status                         # show current worktree info
 wt list                           # show all active worktrees
+wt go wt/add-dark-mode-toggle     # navigate to an existing worktree
 ```
 
 ## Install
@@ -29,12 +30,12 @@ This symlinks `bin/wt` to `~/.local/bin/wt`. Make sure `~/.local/bin` is on your
 
 ### Shell wrapper
 
-Add this to `~/.zshrc` or `~/.bashrc` so that `wt new`, `wt finish`, and `wt abandon` automatically `cd` your shell into the right directory:
+Add this to `~/.zshrc` or `~/.bashrc` so that `wt new`, `wt finish`, `wt abandon`, and `wt go` automatically `cd` your shell into the right directory:
 
 ```bash
 # zsh (~/.zshrc):
 function wt() {
-  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" ]]; then
+  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" ]]; then
     local dir
     dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
   else
@@ -44,7 +45,7 @@ function wt() {
 
 # bash (~/.bashrc) — identical syntax, just a different file:
 wt() {
-  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" ]]; then
+  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" ]]; then
     local dir
     dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
   else
@@ -240,6 +241,14 @@ myapp
   wt/add-dark-mode          3 ahead  clean       2h ago  "add dark mode"
   wt/fix-login-bug          0 ahead  2 dirty     1d ago  "fix the login bug"
 ```
+
+### `wt go <branch-or-slug>`
+
+Navigates to an existing worktree. Useful after reopening a shell.
+
+- Accepts the branch name (`wt/fix-login-bug`) or just the slug (`fix-login-bug`)
+- Matching is exact and case-sensitive; branch match takes priority over slug match
+- If multiple worktrees match, lists them and exits with an error
 
 ### `wt doctor [--dry-run]`
 

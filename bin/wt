@@ -15,6 +15,7 @@
 #   wt pr [--draft] [--yes|-y]                  Push branch and open a GitHub PR (requires gh)
 #   wt status                                   Show current worktree info
 #   wt list                                     Show all worktrees across projects
+#   wt go <branch-or-slug>                      Navigate to an existing worktree
 #   wt doctor [--dry-run]                       Check and repair worktree health
 #   wt help                                     Show this help
 #
@@ -32,7 +33,7 @@
 #
 #      # zsh (~/.zshrc):
 #      function wt() {
-#        if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" ]]; then
+#        if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" ]]; then
 #          local dir
 #          dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
 #        else
@@ -42,7 +43,7 @@
 #
 #      # bash (~/.bashrc):
 #      wt() {    # identical syntax, just a different file
-#        if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" ]]; then
+#        if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" ]]; then
 #          local dir
 #          dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
 #        else
@@ -209,6 +210,7 @@ USAGE
   wt pr [--draft] [--yes|-y]                  Push branch and open a GitHub PR (requires gh)
   wt status                                   Show current worktree info
   wt list                                     Show all active worktrees across projects
+  wt go <branch-or-slug>                      Navigate to an existing worktree
   wt doctor [--dry-run]                       Check for orphaned branches/dirs, fix interactively
   wt help                                     Show this help
 
@@ -243,6 +245,7 @@ NOTES
   • Branch names: wt/<slug> (auto-generated from your description)
   • After `wt new`, your shell cd's into the new worktree
   • After `wt finish`, your shell cd's back to the main worktree
+  • `wt go <branch-or-slug>` navigates to an existing worktree (useful after reopening a shell)
   • Pass --yes / -y to wt abandon or wt pr to skip confirmation prompts
   • Pass --force to wt finish or wt abandon to override non-skippable safety gates
   • `wt sync` merges local base into the worktree — on conflict, shows LLM-friendly context
@@ -1076,6 +1079,54 @@ cmd_list() {
   if (( found == 0 )); then info "No active worktrees found."; fi
 }
 
+# wt go <branch-or-slug> — navigate to an existing worktree
+cmd_go() {
+  local arg="${1:-}"
+  [[ -z "$arg" ]] && error "Usage: wt go <branch-or-slug>"
+
+  local branch_matches=()
+  local slug_matches=()
+
+  while IFS= read -r meta_file; do
+    [[ -f "$meta_file" ]] || continue
+    local branch slug wt_dir
+    branch=$(read_meta "$meta_file" "branch")
+    slug=$(read_meta "$meta_file" "slug")
+    wt_dir=$(dirname "$meta_file")
+    [[ -z "$branch" ]] && continue
+    [[ "$branch" == "$arg" ]] && branch_matches+=("$wt_dir")
+    [[ "$slug"   == "$arg" ]] && slug_matches+=("$wt_dir")
+  done < <(
+    for project_root in "${REGISTERED_PROJECTS[@]+"${REGISTERED_PROJECTS[@]}"}"; do
+      [[ -d "$project_root/${WORKTREES_DIR}" ]] || continue
+      for meta_file in "$project_root/${WORKTREES_DIR}"/*/"$META_FILE"; do
+        [[ -f "$meta_file" ]] || continue
+        echo "$meta_file"
+      done
+    done
+  )
+
+  # Branch match takes priority over slug match
+  local matches=()
+  if (( ${#branch_matches[@]} > 0 )); then
+    matches=("${branch_matches[@]}")
+  else
+    matches=("${slug_matches[@]}")
+  fi
+
+  case "${#matches[@]}" in
+    0) error "No worktree found for: '$arg'" ;;
+    1) echo "${matches[0]}" ;;
+    *)
+      warn "Ambiguous: multiple worktrees match '$arg':"
+      for m in "${matches[@]}"; do
+        echo "  $m" >&2
+      done
+      error "Run 'wt list' to see all worktrees"
+      ;;
+  esac
+}
+
 # Infer and write a .wt-meta for a worktree, merging with any existing fields.
 # Args: project_root wt_path [existing_meta_path]
 # Existing non-empty fields take precedence over inferred values.
@@ -1368,6 +1419,7 @@ main() {
     pr)             cmd_pr "$@" ;;
     status|st)      cmd_status "$@" ;;
     list|ls)        cmd_list "$@" ;;
+    go)             cmd_go "$@" ;;
     doctor)         cmd_doctor "$@" ;;
     help|-h|--help) cmd_help ;;
     *)              error "Unknown command: '$cmd'. Run 'wt help' for usage." ;;
