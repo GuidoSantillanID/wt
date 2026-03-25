@@ -764,13 +764,22 @@ cmd_sync() {
 
 # wt abandon — abandon worktree without merging
 cmd_abandon() {
-  local auto_yes=0 force=0
+  local auto_yes=0 force=0 target=""
   for arg in "$@"; do
     case "$arg" in
       --yes|-y)  auto_yes=1 ;;
       --force)   force=1 ;;
+      -*)        error "Unknown flag: $arg" ;;
+      *)         [[ -z "$target" ]] && target="$arg" \
+                   || error "Usage: wt abandon [<branch-or-slug>] [--yes|-y] [--force]" ;;
     esac
   done
+
+  if [[ -n "$target" ]]; then
+    local resolved
+    resolved=$(_resolve_worktree "$target")
+    cd "$resolved"
+  fi
 
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
@@ -1079,10 +1088,17 @@ cmd_list() {
   if (( found == 0 )); then info "No active worktrees found."; fi
 }
 
-# wt go <branch-or-slug> — navigate to an existing worktree
-cmd_go() {
-  local arg="${1:-}"
-  [[ -z "$arg" ]] && error "Usage: wt go <branch-or-slug>"
+# Resolve a branch name, slug, or absolute path to a worktree directory.
+# Prints the resolved path to stdout. Calls error() on failure.
+_resolve_worktree() {
+  local arg="$1"
+
+  # Full path: verify it has a .wt-meta and return directly
+  if [[ "$arg" == /* ]]; then
+    [[ -f "${arg}/${META_FILE}" ]] || error "No worktree found at: '$arg'"
+    echo "$arg"
+    return
+  fi
 
   local branch_matches=()
   local slug_matches=()
@@ -1125,6 +1141,13 @@ cmd_go() {
       error "Run 'wt list' to see all worktrees"
       ;;
   esac
+}
+
+# wt go <branch-or-slug> — navigate to an existing worktree
+cmd_go() {
+  local arg="${1:-}"
+  [[ -z "$arg" ]] && error "Usage: wt go <branch-or-slug>"
+  _resolve_worktree "$arg"
 }
 
 # Infer and write a .wt-meta for a worktree, merging with any existing fields.

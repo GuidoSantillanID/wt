@@ -436,6 +436,35 @@ stdout_sy_drop=$(wt abandon -y 2>"$_tmp_sy"); rm -f "$_tmp_sy"
 assert_eq             "stdout is main worktree path"  "$REPO"  "$stdout_sy_drop"
 assert_dir_not_exists "worktree removed"              "$WT_PATH_SY"
 
+# ── wt abandon <identifier> ──────────────────────────────────────────────────
+section "wt abandon — remote by branch name"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_REMOTE_ABN="${REPO}/.worktrees/remote-abandon-test"
+wt new "remote abandon test" 2>/dev/null
+# Stay in main checkout — abandon by branch name
+stdout_rabn=$(wt abandon "wt/remote-abandon-test" --yes 2>/dev/null)
+assert_eq             "stdout is main worktree path (remote abandon)" "$REPO" "$stdout_rabn"
+assert_dir_not_exists "worktree removed (remote abandon)"             "$WT_REMOTE_ABN"
+
+section "wt abandon — remote by slug"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_REMOTE_SLUG="${REPO}/.worktrees/remote-abandon-slug"
+wt new "remote abandon slug" 2>/dev/null
+stdout_rslug=$(wt abandon "remote-abandon-slug" --yes 2>/dev/null)
+assert_eq             "stdout is main worktree path (slug)" "$REPO" "$stdout_rslug"
+assert_dir_not_exists "worktree removed (slug)"             "$WT_REMOTE_SLUG"
+
+section "wt abandon — remote by full path"
+cd "$REPO"
+git -C "$REPO" checkout -q dev
+WT_REMOTE_PATH="${REPO}/.worktrees/remote-abandon-path"
+wt new "remote abandon path" 2>/dev/null
+stdout_rpath=$(wt abandon "$WT_REMOTE_PATH" --yes 2>/dev/null)
+assert_eq             "stdout is main worktree path (full path)" "$REPO" "$stdout_rpath"
+assert_dir_not_exists "worktree removed (full path)"             "$WT_REMOTE_PATH"
+
 # ── wt sync ───────────────────────────────────────────────────────────────────
 section "wt sync — error from main checkout"
 cd "$REPO"
@@ -1861,6 +1890,14 @@ assert_contains "no-arg shows usage" "Usage:" "$go_noarg"
 section "wt go — wt help includes wt go"
 help_out=$(wt help 2>&1)
 assert_contains "help lists wt go" "wt go" "$help_out"
+
+section "wt go — full path"
+go_path_stdout=$(wt go "$GO_WT" 2>/dev/null) || true
+assert_eq "stdout is worktree path (full path)" "$GO_WT" "$go_path_stdout"
+
+section "wt go — full path nonexistent"
+go_path_bad=$(wt go "/nonexistent/path" 2>&1 || true)
+assert_contains "full path not found error" "No worktree found" "$go_path_bad"
 
 section "wt go — ambiguous slug across projects"
 GO_PROJ2="${TMPROOT}/projects/go-second-project"
