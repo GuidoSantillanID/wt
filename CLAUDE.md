@@ -1,82 +1,57 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## Project
-
-`wt` is a single-file bash CLI (`bin/wt`, ~1390 lines) that automates git worktree lifecycle: create, sync, finish (rebase+ff+cleanup), abandon, PR, list, doctor. Designed for parallel Claude Code + tmux workflows.
-
-## Commands
+## Running tests
 
 ```bash
-# Run full test suite (stdin must be closed to avoid interactive prompt hangs)
 bash bin/wt-test < /dev/null
-
-# Preserve temp dir on failure for debugging
-bash bin/wt-test --keep < /dev/null
+bash bin/wt-test --keep < /dev/null   # preserve temp dir on failure
 ```
 
-Requires bash 4+ (`brew install bash` on macOS). CI runs on macOS + Ubuntu.
+Stdin must be closed (`< /dev/null`) or `confirm()` prompts hang. Requires bash 4+.
 
-## Architecture
+## Adding a new command
 
-### Stdout/stderr contract
+1. Write failing tests in `bin/wt-test` (append before the `# ─── Summary` section)
+2. Add `cmd_<name>()` in `bin/wt` (functions are grouped before `main()`)
+3. Add dispatch case in `main()` at the bottom of `bin/wt`
+4. If the command prints a path to stdout (for the shell wrapper to `cd`), add it to the wrapper comment at the top of `bin/wt`
 
-Commands that change directories (`new`, `finish`, `abandon`) print **only the target path** to stdout. The shell wrapper (`function wt()` in user's rc file) captures this for `cd`. **All UI** (info, success, warn, error) goes to stderr. `wt list` is the exception — its table goes to stdout (for piping). Breaking this contract breaks the shell wrapper.
+## Critical rules
 
-### Data model: `.wt-meta`
+**Stdout/stderr contract.** Commands that return paths (`new`, `finish`, `abandon`, `open`, `close`, `go`) print ONLY the path to stdout. All UI goes to stderr. `wt list` table goes to stdout. Breaking this breaks the shell wrapper.
 
-Plain `key=value` file in each worktree root. Seven fields: `base_branch`, `created`, `description`, `project`, `project_root`, `slug`, `branch`. Read with `read_meta()` (grep+cut, never eval). Source of truth for `finish`/`abandon`/`sync`/`pr`/`status`.
+**Never eval `.wt-meta`.** Always parse with `read_meta()` (grep+cut). Never `source` or `eval` the file.
 
-### Registry
+**`type=open` guard.** Commands that need `base_branch` (`finish`, `abandon`, `sync`, `retarget`, `pr`) must check `type=open` and refuse. Open worktrees use `wt close`.
 
-`~/.config/wt/projects` (override: `WT_REGISTRY` env var). One absolute path per line. Auto-registered on `wt new`, auto-unregistered when last worktree+branch cleaned up. `wt list` and `wt doctor` iterate the registry.
+## Pitfalls
 
-### Command dispatch
+- `slugify()` strips non-alphanumeric chars. Branch names with `/` need pre-processing (`tr '/' ' '`) before slugifying — see `cmd_open()`.
+- `printf %s` does NOT interpret `\033` escape sequences. Color variables (`$YELLOW`, etc.) work in the format string but not as `%s` arguments. Put colors in the format string or use `%b`.
+- `_repair_wt_meta()` rewrites the entire `.wt-meta` file. It must preserve the `type` field — open and managed worktrees have different formats.
+- `git worktree add` with an existing branch uses `<path> <branch>` (no `-b`). With a new branch uses `<path> -b <branch>`.
 
-`main()` at bottom of `bin/wt` dispatches to `cmd_<name>()` functions. Aliases: `st`→`status`, `ls`→`list`.
+## TDD
 
-### Tests
+Write failing tests first. Run them. Then implement. Never weaken or delete tests to make them pass.
 
-`bin/wt-test` is an integration suite that creates real git repos in `/tmp`. Test framework: `section()` groups, `assert_eq`/`assert_contains`/`assert_not_contains`/`assert_file_exists`/`assert_dir_exists`. Every test invocation uses `WT_REGISTRY="$registry_file"` for isolation.
+## Documentation is mandatory
 
-## Shell Conventions
-
-- `set -euo pipefail` throughout
-- Bash 3.2 empty-array guard: `"${arr[@]+"${arr[@]}"}"` (macOS system bash is 3.2)
-- Never `eval` or `source` `.wt-meta` — parse with `grep | head | cut`
-- `confirm()` reads from stdin — use `--yes`/`-y` flags or `< /dev/null` in scripts/CI
-- Color detection checks stdout (`-t 1`), not stderr, because `wt list` pipes through stdout
-- `fd 5` trick in `cmd_doctor` keeps stdin free for `confirm()` during inner loops
-
-## wt sync — Claude Code integration
-
-`wt sync` is the **one exception** to the "never run `wt` commands via Bash tool" rule. It is safe for Claude Code to invoke autonomously.
-
-`wt sync` merges the local base branch into the current worktree branch. When conflicts occur:
-
-1. Read every conflicted file (they contain `<<<<<<<`/`=======`/`>>>>>>>` markers)
-2. For each conflict, analyse both sides — understand what each change is trying to do
-3. **If the correct resolution is clear** (e.g. one side adds something new, the other makes an unrelated change): resolve it and explain what you did
-4. **If the resolution requires product/business knowledge** (e.g. both sides rewrote the same logic differently): explain both sides to the user and ask how to resolve before editing
-5. After resolving all conflicts in a file: `git add <file>`
-6. Once all files are resolved: `git merge --continue`
-
-To abort at any point: `git merge --abort`
-
-## TDD (Test-Driven Development)
-
-Always use the **superpowers:test-driven-development** skill when implementing any feature or bugfix. Write tests first, then implement.
-
-## Test Integrity
-
-Tests define expected behavior. If a test fails, the implementation is wrong — not the test. Never weaken, skip, or delete tests to make them pass. Fix the code instead.
-
-## Documentation is Mandatory
-
-Every feature or change must update **all** relevant docs before the work is considered complete:
+Every change must update all relevant docs:
 
 - `README.md` — command reference and usage examples
-- `docs/DEVELOPMENT.md` — architecture and internals (reference only; do not read during debugging or bug investigation)
+- `docs/DEVELOPMENT.md` — architecture and internals
 - `CONTRIBUTING.md` — contributor instructions
-- Inline help text in `bin/wt` (the comment block at the top and any `wt help` output)
+- Inline help text in `bin/wt` (header comment block and `cmd_help()`)
+
+## wt sync — conflict resolution
+
+`wt sync` is safe to run via Bash tool (exception to the "never run wt commands" rule).
+
+When conflicts occur after `wt sync`:
+
+1. Read every conflicted file (look for `<<<<<<<`/`=======`/`>>>>>>>` markers)
+2. If the resolution is clear: resolve it and explain what you did
+3. If it requires product/business knowledge: explain both sides and ask
+4. `git add <resolved-files>`, then `git merge --continue`
+5. To abort: `git merge --abort`

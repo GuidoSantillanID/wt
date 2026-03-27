@@ -22,13 +22,28 @@ branch=wt/fix-the-sidebar-overflow-bug
 
 **Reading:** `grep "^key=" file | head -1 | cut -d= -f2-` — no eval, no injection risk. All seven fields are required for `wt finish`/`wt abandon`. `wt list` needs `branch`, `base_branch`, `description`, `project`, `created`.
 
-This file is the source of truth for `wt finish`/`wt abandon` (knows where to merge back) and `wt list` (knows the task description). The file is excluded from `git status` via `.git/info/exclude` (worktree-local gitignore), so it doesn't inflate the dirty count.
+**Open worktrees** (`wt open`) use a different `.wt-meta` format — `type=open`, no `base_branch`:
+
+```
+type=open
+branch=feature/my-branch
+created=2026-03-27T14:30:00
+description=feature/my-branch
+project=my-app
+project_root=/home/user/projects/my-app
+slug=feature-my-branch
+```
+
+Commands that require `base_branch` (`finish`, `abandon`, `sync`, `retarget`, `pr`) check `type=open` and refuse with a helpful message. `wt close` only works on open worktrees.
+
+This file is the source of truth for `wt finish`/`wt abandon` (knows where to merge back), `wt close` (knows the worktree type), and `wt list` (knows the task description). The file is excluded from `git status` via `.git/info/exclude` (worktree-local gitignore), so it doesn't inflate the dirty count.
 
 **Go/Rust note:** Parse with a simple line scanner. Split on first `=`. Store as a struct:
 
 ```rust
 struct WtMeta {
-    base_branch: String,
+    wt_type: Option<String>,  // "open" or None (managed)
+    base_branch: Option<String>, // None for open worktrees
     created: String,          // ISO8601, parse with chrono
     description: String,
     project: String,

@@ -46,8 +46,9 @@ Install: `brew install shellcheck` (macOS) or `apt-get install shellcheck` (Ubun
 - All tests must pass before submitting
 - Follow the existing shell style (`set -euo pipefail`, quoted variables, no `eval`)
 - Never use `eval` or `source` `.wt-meta` — parse with `grep | head | cut`
-- All UI output goes to stderr; only directory paths (`wt new`, `wt finish`, `wt abandon`, `wt go`) and `wt list` table go to stdout (shell wrapper contract)
-- Safety gates: `--yes` skips routine confirms; `--force` overrides non-skippable gates (untracked files in finish, unpushed commits in abandon)
+- All UI output goes to stderr; only directory paths (`wt new`, `wt finish`, `wt abandon`, `wt go`, `wt open`, `wt close`) and `wt list` table go to stdout (shell wrapper contract)
+- Safety gates: `--yes` skips routine confirms; `--force` overrides non-skippable gates (untracked files in finish, unpushed commits in abandon, uncommitted changes in close)
+- `.wt-meta` has a `type` field: `type=open` for worktrees created by `wt open` (no base branch, no merge lifecycle). Managed worktrees (from `wt new`) have no `type` field (implicit default). Commands that require a base branch must check for `type=open` and refuse with a helpful message.
 
 ## Test-Driven Development
 
