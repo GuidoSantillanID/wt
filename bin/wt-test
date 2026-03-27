@@ -1926,9 +1926,9 @@ cd "$REPO"
 git -C "$REPO" worktree remove "$GO_WT" --force 2>/dev/null || true
 git -C "$REPO" branch -D "wt/go-test-branch" 2>/dev/null || true
 
-# ── wt open / wt close ──────────────────────────────────────────────────────
+# ── wt open ─────────────────────────────────────────────────────────────────
 
-section "wt open — checks out existing branch into worktree"
+section "wt open — creates branch off existing branch into worktree"
 cd "$REPO"
 git -C "$REPO" checkout -q main
 # Create a feature branch to open
@@ -1943,25 +1943,25 @@ assert_eq "stdout is worktree path" "$OPEN_WT" "$open_stdout"
 assert_dir_exists "worktree directory created" "$OPEN_WT"
 assert_file_exists ".wt-meta exists" "${OPEN_WT}/.wt-meta"
 
-section "wt open — .wt-meta has type=open"
-open_type=$(grep "^type=" "${OPEN_WT}/.wt-meta" | head -1 | cut -d= -f2-)
-assert_eq "type is open" "open" "$open_type"
+section "wt open — creates a new branch wt/open/<slug>"
+open_head=$(git -C "$OPEN_WT" symbolic-ref --short HEAD 2>/dev/null)
+assert_eq "worktree HEAD is wt/feature-open-test" "wt/feature-open-test" "$open_head"
+
+section "wt open — .wt-meta has base_branch set to original branch"
+open_base=$(grep "^base_branch=" "${OPEN_WT}/.wt-meta" 2>/dev/null | head -1 | cut -d= -f2- || true)
+assert_eq "base_branch is feature/open-test" "feature/open-test" "$open_base"
 
 section "wt open — .wt-meta has correct branch"
-open_branch=$(grep "^branch=" "${OPEN_WT}/.wt-meta" | head -1 | cut -d= -f2-)
-assert_eq "branch is feature/open-test" "feature/open-test" "$open_branch"
+open_branch=$(grep "^branch=" "${OPEN_WT}/.wt-meta" 2>/dev/null | head -1 | cut -d= -f2- || true)
+assert_eq "branch is wt/feature-open-test" "wt/feature-open-test" "$open_branch"
 
-section "wt open — .wt-meta has no base_branch"
-open_base=$(grep "^base_branch=" "${OPEN_WT}/.wt-meta" 2>/dev/null | head -1 | cut -d= -f2- || true)
-assert_eq "no base_branch" "" "$open_base"
+section "wt open — .wt-meta has no type field"
+open_type=$(grep "^type=" "${OPEN_WT}/.wt-meta" 2>/dev/null | head -1 | cut -d= -f2- || true)
+assert_eq "no type field" "" "$open_type"
 
 section "wt open — .wt-meta description is branch name"
-open_desc=$(grep "^description=" "${OPEN_WT}/.wt-meta" | head -1 | cut -d= -f2-)
+open_desc=$(grep "^description=" "${OPEN_WT}/.wt-meta" 2>/dev/null | head -1 | cut -d= -f2- || true)
 assert_eq "description is branch name" "feature/open-test" "$open_desc"
-
-section "wt open — worktree is on the correct branch"
-open_head=$(git -C "$OPEN_WT" symbolic-ref --short HEAD 2>/dev/null)
-assert_eq "worktree HEAD is feature/open-test" "feature/open-test" "$open_head"
 
 section "wt open — feature file is present in worktree"
 assert_file_exists "feature.txt in worktree" "${OPEN_WT}/feature.txt"
@@ -1974,105 +1974,102 @@ section "wt open — no argument errors"
 open_noarg=$(wt open 2>&1 || true)
 assert_contains "no-arg shows usage" "Usage:" "$open_noarg"
 
-section "wt open — branch already checked out errors"
-# feature/open-test is already checked out in OPEN_WT from above — try opening again
-open_checkedout=$(wt open "feature/open-test" 2>&1 || true)
-assert_contains "already checked out error" "already checked out" "$open_checkedout"
+section "wt open — opening same branch twice errors"
+# wt/feature-open-test already exists from above — try opening again
+open_dup=$(wt open "feature/open-test" 2>&1 || true)
+assert_contains "duplicate open error" "already exists" "$open_dup"
 
-section "wt close — removes open worktree"
-# OPEN_WT still exists from wt open tests above
+section "wt open — finish merges work into original branch"
 cd "$OPEN_WT"
-close_stdout=$(wt close 2>/dev/null)
-assert_dir_not_exists "worktree removed" "$OPEN_WT"
+echo "new work" > "${OPEN_WT}/new-work.txt"
+git -C "$OPEN_WT" add new-work.txt
+git -C "$OPEN_WT" commit -q -m "new work on open branch"
+finish_stdout=$(wt finish 2>/dev/null)
+assert_dir_not_exists "worktree removed after finish" "$OPEN_WT"
+# Verify the original branch got the commit (fast-forwarded) by examining the branch's tree
+cd "$REPO"
+open_has_file=$(git -C "$REPO" show feature/open-test:new-work.txt 2>/dev/null || echo "MISSING")
+assert_eq "feature/open-test has new-work.txt" "new work" "$open_has_file"
 
-section "wt close — branch still exists after close"
+section "wt open — original branch is NOT deleted after finish"
 branch_exists=$(git -C "$REPO" rev-parse --verify "feature/open-test" &>/dev/null && echo "yes" || echo "no")
-assert_eq "branch still exists" "yes" "$branch_exists"
+assert_eq "original branch still exists" "yes" "$branch_exists"
 
-section "wt close — stdout is main worktree path"
-assert_eq "stdout is main worktree" "$REPO" "$close_stdout"
+section "wt open — working branch IS deleted after finish"
+wt_branch_exists=$(git -C "$REPO" rev-parse --verify "wt/feature-open-test" &>/dev/null && echo "yes" || echo "no")
+assert_eq "working branch deleted" "no" "$wt_branch_exists"
 
-section "wt close — refuses on managed worktree"
+section "wt open — abandon drops working branch, keeps original"
 cd "$REPO"
 git -C "$REPO" checkout -q main
-wt new "close guard test" 2>/dev/null
-CLOSE_GUARD_WT="${REPO}/.worktrees/close-guard-test"
-cd "$CLOSE_GUARD_WT"
-close_managed=$(wt close 2>&1 || true)
-assert_contains "close refuses managed worktree" "managed worktree" "$close_managed"
-
-section "wt close — refuses from main checkout"
-cd "$REPO"
-close_main=$(wt close 2>&1 || true)
-assert_contains "close refuses main checkout" "not a worktree" "$close_main"
-
-section "wt finish — refuses on open worktree"
-# Create a fresh open worktree for guard tests
-git -C "$REPO" checkout -q -b feature/guard-test
-echo "guard" > "$REPO/guard.txt"
-git -C "$REPO" add guard.txt
-git -C "$REPO" commit -q -m "guard commit"
+# Create another branch to test abandon
+git -C "$REPO" checkout -q -b feature/abandon-open-test
+echo "abandon test" > "$REPO/abandon.txt"
+git -C "$REPO" add abandon.txt
+git -C "$REPO" commit -q -m "abandon test commit"
 git -C "$REPO" checkout -q main
-GUARD_WT="${REPO}/.worktrees/feature-guard-test"
-wt open "feature/guard-test" 2>/dev/null
-cd "$GUARD_WT"
-finish_open=$(wt finish 2>&1 || true)
-assert_contains "finish refuses open worktree" "open worktree" "$finish_open"
-assert_contains "finish suggests wt close" "wt close" "$finish_open"
-
-section "wt abandon — refuses on open worktree"
-cd "$GUARD_WT"
-abandon_open=$(wt abandon --yes 2>&1 || true)
-assert_contains "abandon refuses open worktree" "open worktree" "$abandon_open"
-assert_contains "abandon suggests wt close" "wt close" "$abandon_open"
-
-section "wt sync — refuses on open worktree"
-cd "$GUARD_WT"
-sync_open=$(wt sync 2>&1 || true)
-assert_contains "sync refuses open worktree" "open worktree" "$sync_open"
-assert_contains "sync suggests wt close" "wt close" "$sync_open"
-
-section "wt retarget — refuses on open worktree"
-cd "$GUARD_WT"
-retarget_open=$(wt retarget main 2>&1 || true)
-assert_contains "retarget refuses open worktree" "open worktree" "$retarget_open"
-assert_contains "retarget suggests wt close" "wt close" "$retarget_open"
-
-# Cleanup guard test worktrees
+ABANDON_WT="${REPO}/.worktrees/feature-abandon-open-test"
+wt open "feature/abandon-open-test" 2>/dev/null
+cd "$ABANDON_WT"
+wt abandon --yes --force 2>/dev/null
 cd "$REPO"
-git -C "$REPO" worktree remove "$GUARD_WT" --force 2>/dev/null || true
-git -C "$REPO" worktree remove "$CLOSE_GUARD_WT" --force 2>/dev/null || true
-git -C "$REPO" branch -D "wt/close-guard-test" 2>/dev/null || true
+assert_dir_not_exists "worktree removed after abandon" "$ABANDON_WT"
+# Original branch survives
+ab_branch=$(git -C "$REPO" rev-parse --verify "feature/abandon-open-test" &>/dev/null && echo "yes" || echo "no")
+assert_eq "original branch still exists after abandon" "yes" "$ab_branch"
+# Working branch deleted
+ab_wt_branch=$(git -C "$REPO" rev-parse --verify "wt/feature-abandon-open-test" &>/dev/null && echo "yes" || echo "no")
+assert_eq "working branch deleted after abandon" "no" "$ab_wt_branch"
 
-section "wt open + wt go — navigate by branch name"
+section "wt open — sync merges original branch into worktree"
 cd "$REPO"
-git -C "$REPO" checkout -q -b feature/go-open-test
-echo "go" > "$REPO/go.txt"
-git -C "$REPO" add go.txt
-git -C "$REPO" commit -q -m "go commit"
 git -C "$REPO" checkout -q main
-GO_OPEN_WT="${REPO}/.worktrees/feature-go-open-test"
-wt open "feature/go-open-test" 2>/dev/null
-go_open_stdout=$(wt go "feature/go-open-test" 2>/dev/null) || true
-assert_eq "wt go finds open worktree by branch" "$GO_OPEN_WT" "$go_open_stdout"
+git -C "$REPO" checkout -q -b feature/sync-open-test
+echo "sync base" > "$REPO/sync-base.txt"
+git -C "$REPO" add sync-base.txt
+git -C "$REPO" commit -q -m "sync base commit"
+git -C "$REPO" checkout -q main
+SYNC_WT="${REPO}/.worktrees/feature-sync-open-test"
+wt open "feature/sync-open-test" 2>/dev/null
+# Add a new commit to the original branch after opening
+git -C "$REPO" checkout -q feature/sync-open-test
+echo "new upstream" > "$REPO/upstream.txt"
+git -C "$REPO" add upstream.txt
+git -C "$REPO" commit -q -m "upstream commit"
+git -C "$REPO" checkout -q main
+# Sync should pull the new commit
+cd "$SYNC_WT"
+wt sync 2>/dev/null
+assert_file_exists "upstream.txt synced into worktree" "${SYNC_WT}/upstream.txt"
+
+section "wt open + wt go — navigate by original branch name"
+go_open_stdout=$(wt go "wt/feature-sync-open-test" 2>/dev/null) || true
+assert_eq "wt go finds open worktree by branch" "$SYNC_WT" "$go_open_stdout"
 
 section "wt open + wt go — navigate by slug"
-go_open_slug=$(wt go "feature-go-open-test" 2>/dev/null) || true
-assert_eq "wt go finds open worktree by slug" "$GO_OPEN_WT" "$go_open_slug"
+go_open_slug=$(wt go "feature-sync-open-test" 2>/dev/null) || true
+assert_eq "wt go finds open worktree by slug" "$SYNC_WT" "$go_open_slug"
 
-section "wt open + wt list — shows open worktree"
+section "wt open + wt list — shows opened worktree"
+cd "$REPO"
 list_out=$(wt list 2>/dev/null)
-assert_contains "list shows open worktree branch" "feature/go-open-test" "$list_out"
-assert_contains "list shows [open] marker" "[open]" "$list_out"
+assert_contains "list shows opened worktree branch" "wt/feature-sync-open-test" "$list_out"
 
-section "wt help — includes open and close"
+section "wt open — wt close is removed"
+close_out=$(wt close 2>&1 || true)
+assert_contains "close is unknown command" "Unknown" "$close_out"
+
+section "wt help — includes open, not close"
 help_open=$(wt help 2>&1)
 assert_contains "help lists wt open" "wt open" "$help_open"
-assert_contains "help lists wt close" "wt close" "$help_open"
+# close should no longer appear in help
+help_has_close=$(echo "$help_open" | grep -c "wt close" || true)
+assert_eq "help does not list wt close" "0" "$help_has_close"
 
 # Cleanup
 cd "$REPO"
-git -C "$REPO" worktree remove "$GO_OPEN_WT" --force 2>/dev/null || true
+git -C "$REPO" worktree remove "$SYNC_WT" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/feature-sync-open-test" 2>/dev/null || true
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 

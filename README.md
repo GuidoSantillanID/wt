@@ -8,9 +8,8 @@ Works great standalone. Works *especially* well with **Claude Code + tmux** — 
 
 ```
 wt new "add dark mode toggle"     # create worktree + branch, cd into it
-wt open feature/my-branch         # check out existing branch into a worktree
+wt open feature/my-branch         # branch off an existing branch into a worktree
 wt finish                         # rebase + fast-forward + clean up
-wt close                          # remove open worktree (branch stays)
 wt sync                           # merge local base into worktree (LLM-friendly)
 wt retarget [branch]              # change which branch this worktree targets
 wt abandon                        # abandon without merging
@@ -32,12 +31,12 @@ This symlinks `bin/wt` to `~/.local/bin/wt`. Make sure `~/.local/bin` is on your
 
 ### Shell wrapper
 
-Add this to `~/.zshrc` or `~/.bashrc` so that `wt new`, `wt finish`, `wt abandon`, `wt go`, `wt open`, and `wt close` automatically `cd` your shell into the right directory:
+Add this to `~/.zshrc` or `~/.bashrc` so that `wt new`, `wt finish`, `wt abandon`, `wt go`, and `wt open` automatically `cd` your shell into the right directory:
 
 ```bash
 # zsh (~/.zshrc):
 function wt() {
-  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" || "$1" == "open" || "$1" == "close" ]]; then
+  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" || "$1" == "open" ]]; then
     local dir
     dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
   else
@@ -47,7 +46,7 @@ function wt() {
 
 # bash (~/.bashrc) — identical syntax, just a different file:
 wt() {
-  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" || "$1" == "open" || "$1" == "close" ]]; then
+  if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" || "$1" == "open" ]]; then
     local dir
     dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
   else
@@ -71,7 +70,7 @@ This enables:
 - `wt go <tab>` — branch names from all registered worktrees
 - `wt open <tab>` — local branch names
 - `wt abandon <tab>` — branch names + flags
-- `wt finish/pr/doctor/close <tab>` — flags
+- `wt finish/pr/doctor <tab>` — flags
 
 File I/O uses only zsh builtins (no `grep`/`cut` forks per worktree), so completion stays fast (~5ms) regardless of how many worktrees you have.
 
@@ -94,14 +93,11 @@ The registry is a plain text file — one absolute project path per line.
 # Create a worktree from inside a project directory
 wt new "fix the login bug"
 
-# Check out an existing feature branch into a worktree
+# Branch off an existing feature branch into a worktree
 wt open feature/my-branch
 
 # List all active worktrees across all projects
 wt list
-
-# Close an open worktree (branch stays as-is)
-wt close
 
 # Finish work: rebase onto base branch, fast-forward, clean up
 # (run from inside the worktree)
@@ -136,13 +132,13 @@ wt doctor
 ## How it works
 
 - Worktrees are created at `<project>/.worktrees/<slug>/`
-- **Managed worktrees** (`wt new`): creates a `wt/<slug>` branch, tracks a base branch in `.wt-meta`, integrates back with `wt finish`
-- **Open worktrees** (`wt open`): checks out an existing branch directly, no intermediate branch, clean up with `wt close`
-- A `.wt-meta` file in each worktree stores metadata (base branch, description, timestamps, type)
+- **`wt new`**: creates a `wt/<slug>` branch off the current branch, tracks it as `base_branch` in `.wt-meta`
+- **`wt open`**: creates a `wt/<slug>` branch off an existing named branch, with that branch as `base_branch`
+- Both support the full lifecycle: `finish`, `abandon`, `sync`, `retarget`, `pr`
+- A `.wt-meta` file in each worktree stores metadata (base branch, description, timestamps)
 - `.worktrees/` and `.wt-meta` are excluded from git via `.git/info/exclude` (never committed)
 - `wt finish` integrates the worktree branch into its base (rebase or squash, auto-detected), fast-forwards the base, and removes the worktree and branch
 - `wt abandon` removes the worktree and branch without merging
-- `wt close` removes an open worktree — the branch stays untouched
 
 ## Commands reference
 
@@ -157,30 +153,17 @@ Creates a new git worktree with an auto-named branch.
 
 ### `wt open <branch>`
 
-Checks out an existing local branch into a worktree — for working on multiple feature branches in parallel without creating intermediate branches.
+Creates a worktree branching off an existing local branch — for working on top of feature branches in parallel with full lifecycle support.
 
 - The branch must exist locally (run `git fetch` first if needed)
-- The branch must not already be checked out in another worktree
-- Creates a `.wt-meta` with `type=open` — no `base_branch`, no merge lifecycle
-- `wt go`, `wt list`, `wt status`, and `wt doctor` all work with open worktrees
-- `wt finish`, `wt abandon`, `wt sync`, `wt retarget`, and `wt pr` refuse open worktrees with a helpful message — use `wt close` instead
+- Creates a `wt/<slug>` branch off the target, with `base_branch` set to the target
+- Full lifecycle works: `finish` merges work back into the target branch, `abandon` drops only the working branch (target branch is untouched), `sync` pulls updates from the target branch
+- `wt go`, `wt list`, `wt status`, `wt doctor`, `wt retarget`, and `wt pr` all work
 
 ```bash
-wt open feature/my-branch        # check out into .worktrees/feature-my-branch/
+wt open feature/my-branch        # creates wt/feature-my-branch off feature/my-branch
 wt open GP-123-fix-login          # works with any branch naming convention
 ```
-
-### `wt close [--force]`
-
-Removes an open worktree. The branch stays exactly where you left it — with all your commits.
-
-Pass `--force` to override safety gates (uncommitted changes, untracked files).
-
-**On success:**
-- Worktree directory removed
-- Branch is **not** deleted (unlike `wt abandon`)
-- Inside tmux: prints a reminder to close the current window
-- `cd`s back to main checkout (via shell wrapper)
 
 ### `wt finish [--force]`
 
@@ -296,10 +279,8 @@ Shows all active worktrees across all registered projects:
 myapp
   wt/add-dark-mode          3 ahead  clean       2h ago  "add dark mode"
   wt/fix-login-bug          0 ahead  2 dirty     1d ago  "fix the login bug"
-  feature/payments               –   clean       0m ago  "feature/payments"  [open]
+  wt/feature-payments       0 ahead  clean       0m ago  "feature/payments"
 ```
-
-Open worktrees show `[open]` and `–` instead of an ahead count (no base branch to compare against).
 
 ### `wt go <branch-or-slug>`
 
@@ -374,18 +355,18 @@ wt finish   # rebases onto base, fast-forwards, cleans up
 
 ### Working on existing feature branches in parallel
 
-Use `wt open` when you already have feature branches and want to work on multiple at the same time:
+Use `wt open` when you already have feature branches and want to work on them in isolation:
 
 ```bash
 # Main checkout is on feature-A, want to also work on feature-B
-wt open feature/payment-api       # opens in .worktrees/feature-payment-api/
+wt open feature/payment-api       # creates wt/feature-payment-api off feature/payment-api
 
-# Work on it, commit directly to feature/payment-api
-# When done, just close the worktree — branch stays with your commits
-wt close
+# Work on it, make commits on the wt/ branch
+# When done, merge work back into feature/payment-api
+wt finish
 
-# Push from the main checkout or anywhere
-git push origin feature/payment-api
+# Or abandon without merging (feature/payment-api stays untouched)
+wt abandon
 ```
 
 ### Recovering from a conflict in `wt finish`

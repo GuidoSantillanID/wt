@@ -22,28 +22,15 @@ branch=wt/fix-the-sidebar-overflow-bug
 
 **Reading:** `grep "^key=" file | head -1 | cut -d= -f2-` — no eval, no injection risk. All seven fields are required for `wt finish`/`wt abandon`. `wt list` needs `branch`, `base_branch`, `description`, `project`, `created`.
 
-**Open worktrees** (`wt open`) use a different `.wt-meta` format — `type=open`, no `base_branch`:
+`wt open` creates the same format — `base_branch` is set to the target branch, `branch` is the new `wt/<slug>` branch. Both `wt new` and `wt open` worktrees support the full lifecycle (`finish`, `abandon`, `sync`, `retarget`, `pr`).
 
-```
-type=open
-branch=feature/my-branch
-created=2026-03-27T14:30:00
-description=feature/my-branch
-project=my-app
-project_root=/home/user/projects/my-app
-slug=feature-my-branch
-```
-
-Commands that require `base_branch` (`finish`, `abandon`, `sync`, `retarget`, `pr`) check `type=open` and refuse with a helpful message. `wt close` only works on open worktrees.
-
-This file is the source of truth for `wt finish`/`wt abandon` (knows where to merge back), `wt close` (knows the worktree type), and `wt list` (knows the task description). The file is excluded from `git status` via `.git/info/exclude` (worktree-local gitignore), so it doesn't inflate the dirty count.
+This file is the source of truth for `wt finish`/`wt abandon` (knows where to merge back) and `wt list` (knows the task description). The file is excluded from `git status` via `.git/info/exclude` (worktree-local gitignore), so it doesn't inflate the dirty count.
 
 **Go/Rust note:** Parse with a simple line scanner. Split on first `=`. Store as a struct:
 
 ```rust
 struct WtMeta {
-    wt_type: Option<String>,  // "open" or None (managed)
-    base_branch: Option<String>, // None for open worktrees
+    base_branch: String,
     created: String,          // ISO8601, parse with chrono
     description: String,
     project: String,
@@ -175,7 +162,7 @@ fi
 | Dependency | Usage | Notes |
 |---|---|---|
 | `git` | All operations | Requires 2.5+ for `git worktree` |
-| `tmux` | Detect if running inside tmux (via `$TMUX`) to show close-window hint | Optional — guarded by `[[ -n "${TMUX:-}" ]]` |
+| `tmux` | Detect if running inside tmux (via `$TMUX`) to show window-close hint | Optional — guarded by `[[ -n "${TMUX:-}" ]]` |
 | `find` | `wt doctor` — inner checks only (branch/worktree loops) | POSIX `find` — no GNU extensions used |
 | `date` | `human_age()` — timestamp to seconds | GNU `date -d` or BSD `date -j -f` |
 | `sed`, `tr`, `cut` | `slugify()`, `read_meta()` | POSIX |
@@ -356,7 +343,7 @@ delete_mode: "force" → git branch -D (always used — see note below)
    - Check if <project_root>/.worktrees/ is empty or absent
    - Check if no wt/* branches remain: git branch --list 'wt/*' | wc -l == 0
    - If both: _unregister_project(project_root)
-4. [if TMUX] Print bold "You can now close this tmux window." hint to stderr
+4. [if TMUX] Print bold "You can now close this tmux window" hint to stderr
 ```
 
 ### `wt list`

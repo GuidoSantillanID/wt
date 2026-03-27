@@ -18,18 +18,15 @@ Stdin must be closed (`< /dev/null`) or `confirm()` prompts hang. Requires bash 
 
 ## Critical rules
 
-**Stdout/stderr contract.** Commands that return paths (`new`, `finish`, `abandon`, `open`, `close`, `go`) print ONLY the path to stdout. All UI goes to stderr. `wt list` table goes to stdout. Breaking this breaks the shell wrapper.
+**Stdout/stderr contract.** Commands that return paths (`new`, `finish`, `abandon`, `open`, `go`) print ONLY the path to stdout. All UI goes to stderr. `wt list` table goes to stdout. Breaking this breaks the shell wrapper.
 
 **Never eval `.wt-meta`.** Always parse with `read_meta()` (grep+cut). Never `source` or `eval` the file.
-
-**`type=open` guard.** Commands that need `base_branch` (`finish`, `abandon`, `sync`, `retarget`, `pr`) must check `type=open` and refuse. Open worktrees use `wt close`.
 
 ## Pitfalls
 
 - `slugify()` strips non-alphanumeric chars. Branch names with `/` need pre-processing (`tr '/' ' '`) before slugifying — see `cmd_open()`.
 - `printf %s` does NOT interpret `\033` escape sequences. Color variables (`$YELLOW`, etc.) work in the format string but not as `%s` arguments. Put colors in the format string or use `%b`.
-- `_repair_wt_meta()` rewrites the entire `.wt-meta` file. It must preserve the `type` field — open and managed worktrees have different formats.
-- `git worktree add` with an existing branch uses `<path> <branch>` (no `-b`). With a new branch uses `<path> -b <branch>`.
+- `git worktree add` with an existing branch uses `<path> <branch>` (no `-b`). With a new branch uses `<path> -b <branch>`. `wt open` uses `-b` to create a new branch off the target.
 
 ## TDD
 

@@ -68,8 +68,7 @@ _wt() {
     'pr:push branch and open a GitHub PR'
     'status:show current worktree info'
     'list:show all worktrees across projects'
-    'open:check out an existing branch into a worktree'
-    'close:remove an open worktree (branch stays)'
+    'open:create a worktree branching off an existing branch'
     'go:navigate to an existing worktree'
     'doctor:check and repair worktree health'
     'help:show help'
@@ -120,9 +119,6 @@ _wt() {
           local -a localbranches
           localbranches=( ${(f)"$(git branch --format='%(refname:short)' 2>/dev/null)"} )
           _describe 'local branch' localbranches
-          ;;
-        close)
-          _arguments '--force[override safety gates]'
           ;;
         retarget)
           local -a localbranches
