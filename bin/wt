@@ -15,6 +15,8 @@
 #   wt pr [--draft] [--yes|-y]                  Push branch and open a GitHub PR (requires gh)
 #   wt status                                   Show current worktree info
 #   wt list                                     Show all worktrees across projects
+#   wt open <branch>                             Check out an existing branch into a worktree
+#   wt close [--force]                          Remove an open worktree (branch stays)
 #   wt go <branch-or-slug>                      Navigate to an existing worktree
 #   wt doctor [--dry-run]                       Check and repair worktree health
 #   wt help                                     Show this help
@@ -33,7 +35,7 @@
 #
 #      # zsh (~/.zshrc):
 #      function wt() {
-#        if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" ]]; then
+#        if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" || "$1" == "open" || "$1" == "close" ]]; then
 #          local dir
 #          dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
 #        else
@@ -43,7 +45,7 @@
 #
 #      # bash (~/.bashrc):
 #      wt() {    # identical syntax, just a different file
-#        if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" ]]; then
+#        if [[ "$1" == "new" || "$1" == "finish" || "$1" == "abandon" || "$1" == "go" || "$1" == "open" || "$1" == "close" ]]; then
 #          local dir
 #          dir=$(command wt "$@") && [[ -n "$dir" ]] && cd "$dir"
 #        else
@@ -215,6 +217,8 @@ USAGE
   wt pr [--draft] [--yes|-y]                  Push branch and open a GitHub PR (requires gh)
   wt status                                   Show current worktree info
   wt list                                     Show all active worktrees across projects
+  wt open <branch>                            Check out an existing branch into a worktree
+  wt close [--force]                          Remove an open worktree (branch stays)
   wt go <branch-or-slug>                      Navigate to an existing worktree
   wt doctor [--dry-run]                       Check for orphaned branches/dirs, fix interactively
   wt help                                     Show this help
@@ -244,6 +248,12 @@ EXAMPLES
   # List all active worktrees:
   wt list
 
+  # Check out an existing feature branch into a worktree:
+  wt open feature/my-branch
+
+  # Remove an open worktree (branch stays as-is):
+  wt close
+
 NOTES
   • Run `wt new` from inside a project — it registers the project automatically
   • Worktrees are created at <project>/.worktrees/<slug>/
@@ -260,8 +270,193 @@ NOTES
   • `wt finish` auto-detects merge commits from `wt sync` and uses squash instead of rebase
   • Projects are tracked in ${XDG_CONFIG_HOME:-~/.config}/wt/projects (one path per line)
   • Override registry path: export WT_REGISTRY=/path/to/registry
-  • Inside tmux, cleanup commands (finish/abandon) show a reminder to close the current window
+  • `wt open` checks out an existing branch — no intermediate wt/ branch created
+  • `wt close` removes the worktree but leaves the branch untouched
+  • Open worktrees cannot use finish/abandon/sync/retarget — use close instead
+  • Inside tmux, cleanup commands (finish/abandon/close) show a reminder to close the current window
 HELP
+}
+
+# wt open <branch> — check out an existing branch into a worktree
+cmd_open() {
+  local branch=""
+
+  for arg in "$@"; do
+    case "$arg" in
+      -*) error "Unknown flag: $arg" ;;
+      *) [[ -z "$branch" ]] && branch="$arg" \
+           || error "Usage: wt open <branch>" ;;
+    esac
+  done
+
+  [[ -z "$branch" ]] && error "Usage: wt open <branch>"
+
+  # Resolve project root
+  local project_root
+  project_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+    || error "Not inside a git repository. Run from inside a project."
+
+  # If inside a worktree, redirect to actual project root
+  if [[ -f "${project_root}/.git" ]]; then
+    project_root=$(get_main_worktree) \
+      || error "Could not resolve main worktree path"
+  fi
+
+  # Validate branch exists locally
+  git -C "$project_root" rev-parse --verify "$branch" &>/dev/null \
+    || error "Branch '${branch}' does not exist locally. Run 'git fetch' first?"
+
+  # Validate branch is not already checked out
+  local checked_out
+  checked_out=$(git -C "$project_root" worktree list --porcelain 2>/dev/null \
+    | grep "^branch refs/heads/${branch}$" || true)
+  [[ -n "$checked_out" ]] \
+    && error "Branch '${branch}' is already checked out in another worktree."
+
+  # Slugify the branch name for the worktree directory
+  # Replace / with space first so slugify converts them to hyphens
+  local slug
+  slug=$(slugify "${branch//\// }")
+  [[ -z "$slug" ]] && error "Could not generate a slug from branch name: '$branch'"
+
+  local worktree_path="${project_root}/${WORKTREES_DIR}/${slug}"
+
+  # Conflict check
+  [[ -d "$worktree_path" ]] && error "Worktree directory already exists: $worktree_path"
+
+  local project_name
+  project_name=$(basename "$project_root")
+
+  local created
+  created=$(date '+%Y-%m-%dT%H:%M:%S')
+
+  _register_project "$project_root"
+
+  mkdir -p "${project_root}/${WORKTREES_DIR}"
+
+  # Exclude .worktrees/ from git status
+  mkdir -p "${project_root}/.git/info"
+  if ! grep -qxF ".worktrees/" "${project_root}/.git/info/exclude" 2>/dev/null; then
+    echo ".worktrees/" >> "${project_root}/.git/info/exclude"
+  fi
+
+  info "Opening worktree: ${BOLD}${project_name}/.worktrees/${slug}${RESET}"
+  info "Branch: ${BOLD}${branch}${RESET}"
+
+  git -C "$project_root" worktree add "$worktree_path" "$branch" >&2 \
+    || error "Failed to create git worktree"
+
+  # Write .wt-meta with type=open (no base_branch)
+  cat > "${worktree_path}/${META_FILE}" <<EOF
+type=open
+branch=${branch}
+created=${created}
+description=${branch}
+project=${project_name}
+project_root=${project_root}
+slug=${slug}
+EOF
+
+  # Exclude .wt-meta from git status
+  local common_dir
+  common_dir=$(git -C "$worktree_path" rev-parse --git-common-dir 2>/dev/null || echo "")
+  if [[ -n "$common_dir" ]]; then
+    mkdir -p "${common_dir}/info"
+    if ! grep -qxF ".wt-meta" "${common_dir}/info/exclude" 2>/dev/null; then
+      echo ".wt-meta" >> "${common_dir}/info/exclude"
+    fi
+  fi
+
+  success "Worktree opened: ${worktree_path}"
+
+  echo "$worktree_path"
+}
+
+# wt close — remove an open worktree (branch stays as-is)
+cmd_close() {
+  local force=0
+  for arg in "$@"; do
+    case "$arg" in
+      --force) force=1 ;;
+      -*) error "Unknown flag: $arg" ;;
+    esac
+  done
+
+  local repo_root
+  repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+    || error "Not inside a git repository"
+
+  [[ -d "${repo_root}/.git" ]] \
+    && error "You are in the main checkout, not a worktree."
+
+  local meta_file="${repo_root}/${META_FILE}"
+  [[ -f "$meta_file" ]] \
+    || error "No ${META_FILE} found."
+
+  local wt_type branch project project_root slug
+  wt_type=$(read_meta "$meta_file" "type")
+  branch=$(read_meta "$meta_file" "branch")
+  project=$(read_meta "$meta_file" "project")
+  project_root=$(read_meta "$meta_file" "project_root")
+  slug=$(read_meta "$meta_file" "slug")
+
+  [[ "$wt_type" != "open" ]] \
+    && error "This is a managed worktree. Use 'wt finish' or 'wt abandon' instead."
+
+  info "Worktree: ${BOLD}${branch}${RESET}"
+
+  # Safety: uncommitted tracked changes
+  local tracked_changes
+  tracked_changes=$(git diff --name-only 2>/dev/null || true)
+  local staged_changes
+  staged_changes=$(git diff --cached --name-only 2>/dev/null || true)
+  if [[ -n "$tracked_changes" || -n "$staged_changes" ]]; then
+    if (( force == 0 )); then
+      error "Uncommitted changes in worktree. Use --force to override."
+    fi
+    warn "Discarding uncommitted changes (--force)."
+  fi
+
+  # Safety: untracked files
+  local untracked
+  untracked=$(git ls-files --others --exclude-standard 2>/dev/null || true)
+  if [[ -n "$untracked" ]]; then
+    if (( force == 0 )); then
+      error "Untracked files in worktree. Use --force to override."
+    fi
+    warn "Discarding untracked files (--force)."
+  fi
+
+  local main_wt
+  main_wt=$(get_main_worktree) \
+    || error "Could not resolve main worktree path"
+
+  info "Removing worktree..."
+  git -C "$main_wt" worktree remove "$repo_root" --force >&2 \
+    || warn "Could not auto-remove worktree dir. Run: rm -rf ${repo_root}"
+
+  # Auto-unregister project if no worktrees remain
+  if [[ -n "$project_root" ]]; then
+    local has_wts=0
+    if [[ -d "${project_root}/${WORKTREES_DIR}" ]]; then
+      for wt_dir in "${project_root}/${WORKTREES_DIR}"/*/; do
+        [[ -d "$wt_dir" ]] && has_wts=1 && break
+      done
+    fi
+    local wt_branch_count
+    wt_branch_count=$(git -C "$project_root" branch --list 'wt/*' 2>/dev/null | wc -l | tr -d ' ')
+    if (( has_wts == 0 && wt_branch_count == 0 )); then
+      _unregister_project "$project_root"
+    fi
+  fi
+
+  success "Worktree closed. Branch '${branch}' is untouched."
+
+  if [[ -n "${TMUX:-}" ]]; then
+    echo -e "\n  ${BOLD}You can now close this tmux window.${RESET}\n" >&2
+  fi
+
+  echo "$main_wt"
 }
 
 # wt new "<description>"
@@ -390,6 +585,11 @@ cmd_retarget() {
   base_branch=$(read_meta "$meta_file" "base_branch")
   branch=$(read_meta "$meta_file" "branch")
   description=$(read_meta "$meta_file" "description")
+
+  local wt_type
+  wt_type=$(read_meta "$meta_file" "type")
+  [[ "$wt_type" == "open" ]] \
+    && error "This is an open worktree. Use 'wt close' to remove it."
 
   [[ -z "$base_branch" || -z "$branch" ]] \
     && error "Corrupt .wt-meta — missing required fields"
@@ -593,6 +793,11 @@ cmd_finish() {
   slug=$(read_meta "$meta_file" "slug")
   branch=$(read_meta "$meta_file" "branch")
 
+  local wt_type
+  wt_type=$(read_meta "$meta_file" "type")
+  [[ "$wt_type" == "open" ]] \
+    && error "This is an open worktree. Use 'wt close' to remove it."
+
   [[ -z "$base_branch" || -z "$branch" ]] \
     && error "Corrupt .wt-meta — missing required fields"
 
@@ -681,6 +886,11 @@ cmd_sync() {
   base_branch=$(read_meta "$meta_file" "base_branch")
   description=$(read_meta "$meta_file" "description")
   branch=$(read_meta "$meta_file" "branch")
+
+  local wt_type
+  wt_type=$(read_meta "$meta_file" "type")
+  [[ "$wt_type" == "open" ]] \
+    && error "This is an open worktree. Use 'wt close' to remove it."
 
   [[ -z "$base_branch" || -z "$branch" ]] \
     && error "Corrupt .wt-meta — missing required fields"
@@ -805,6 +1015,11 @@ cmd_abandon() {
   slug=$(read_meta "$meta_file" "slug")
   branch=$(read_meta "$meta_file" "branch")
 
+  local wt_type
+  wt_type=$(read_meta "$meta_file" "type")
+  [[ "$wt_type" == "open" ]] \
+    && error "This is an open worktree. Use 'wt close' to remove it."
+
   [[ -z "$branch" ]] && error "Corrupt .wt-meta — missing branch field"
 
   info "Worktree: ${BOLD}${branch}${RESET}"
@@ -877,10 +1092,14 @@ cmd_pr() {
   [[ -f "$meta_file" ]] \
     || error "No ${META_FILE} found. Was this worktree created with 'wt new'?"
 
-  local base_branch description branch
+  local base_branch description branch wt_type
   base_branch=$(read_meta "$meta_file" "base_branch")
   description=$(read_meta "$meta_file" "description")
   branch=$(read_meta "$meta_file" "branch")
+  wt_type=$(read_meta "$meta_file" "type")
+
+  [[ "$wt_type" == "open" ]] \
+    && error "This is an open worktree. Use 'wt close' to remove it, or 'gh pr create' for PRs."
 
   [[ -z "$base_branch" || -z "$branch" ]] \
     && error "Corrupt .wt-meta — missing required fields"
@@ -960,24 +1179,35 @@ cmd_status() {
   [[ -f "$meta_file" ]] \
     || error "No ${META_FILE} found. Was this worktree created with 'wt new'?"
 
-  local base_branch description branch created
+  local base_branch description branch created wt_type
   base_branch=$(read_meta "$meta_file" "base_branch")
   description=$(read_meta "$meta_file" "description")
   branch=$(read_meta "$meta_file" "branch")
   created=$(read_meta "$meta_file" "created")
+  wt_type=$(read_meta "$meta_file" "type")
 
-  [[ -z "$base_branch" || -z "$branch" ]] \
+  [[ -z "$branch" ]] && error "Corrupt .wt-meta — missing branch field"
+  [[ "$wt_type" != "open" && -z "$base_branch" ]] \
     && error "Corrupt .wt-meta — missing required fields"
 
   local dirty_count ahead age
   dirty_count=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-  ahead=$(git rev-list --count "${base_branch}..HEAD" 2>/dev/null || echo 0)
+  if [[ -n "$base_branch" ]]; then
+    ahead=$(git rev-list --count "${base_branch}..HEAD" 2>/dev/null || echo 0)
+  else
+    ahead="–"
+  fi
   age="?"
   [[ -n "$created" ]] && age=$(human_age "$created")
 
   echo -e "${BOLD}${branch}${RESET}" >&2
+  if [[ "$wt_type" == "open" ]]; then
+    echo -e "  Type:         ${YELLOW}open${RESET}" >&2
+  fi
   echo -e "  Description:  ${description}" >&2
-  echo -e "  Base branch:  ${base_branch}" >&2
+  if [[ -n "$base_branch" ]]; then
+    echo -e "  Base branch:  ${base_branch}" >&2
+  fi
   echo -e "  Commits:      ${ahead} ahead" >&2
   if (( dirty_count > 0 )); then
     echo -e "  Working tree: ${YELLOW}${dirty_count} dirty${RESET}" >&2
@@ -1046,12 +1276,13 @@ cmd_list() {
     local wt_dir
     wt_dir=$(dirname "$meta_file")
 
-    local base_branch description project created branch
+    local base_branch description project created branch wt_type
     base_branch=$(read_meta "$meta_file" "base_branch")
     description=$(read_meta "$meta_file" "description")
     project=$(read_meta "$meta_file" "project")
     created=$(read_meta "$meta_file" "created")
     branch=$(read_meta "$meta_file" "branch")
+    wt_type=$(read_meta "$meta_file" "type")
 
     [[ -z "$branch" ]] && continue
 
@@ -1060,8 +1291,12 @@ cmd_list() {
       dirty_count=$(git -C "$wt_dir" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
       if (( dirty_count > 0 )); then dirty_label="${dirty_count} dirty"; else dirty_label="clean"; fi
 
-      local ahead
-      ahead=$(git -C "$wt_dir" rev-list --count "${base_branch}..HEAD" 2>/dev/null || echo 0)
+      local ahead="–"
+      if [[ -n "$base_branch" ]]; then
+        ahead=$(git -C "$wt_dir" rev-list --count "${base_branch}..HEAD" 2>/dev/null || echo "?")
+      fi
+      local ahead_label="${ahead} ahead"
+      [[ "$ahead" == "–" ]] && ahead_label="–"
 
       local age="?"
       [[ -n "$created" ]] && age=$(human_age "$created")
@@ -1075,8 +1310,11 @@ cmd_list() {
       local dirty_color="$GREEN"
       (( dirty_count > 0 )) && dirty_color="$YELLOW"
 
-      printf "  ${CYAN}%-40s${RESET}  ${BOLD}%8s${RESET}  ${dirty_color}%-10s${RESET}  %-8s  %s\n" \
-        "$branch" "${ahead} ahead" "$dirty_label" "$age" "\"${description}\""
+      local type_label=""
+      [[ "$wt_type" == "open" ]] && type_label="  ${YELLOW}[open]${RESET}"
+
+      printf "  ${CYAN}%-40s${RESET}  ${BOLD}%8s${RESET}  ${dirty_color}%-10s${RESET}  %-8s  %s${type_label}\n" \
+        "$branch" "$ahead_label" "$dirty_label" "$age" "\"${description}\""
 
       found=1
     fi
@@ -1205,7 +1443,22 @@ _repair_wt_meta() {
   _ev=$(grep "^description=" "$existing_meta" 2>/dev/null | head -1 | cut -d= -f2-)
   [[ -n "$_ev" ]] && r_description="$_ev"
 
-  cat > "${wt_path}/${META_FILE}" <<EOF
+  local r_type=""
+  _ev=$(grep "^type=" "$existing_meta" 2>/dev/null | head -1 | cut -d= -f2-)
+  [[ -n "$_ev" ]] && r_type="$_ev"
+
+  if [[ "$r_type" == "open" ]]; then
+    cat > "${wt_path}/${META_FILE}" <<EOF
+type=open
+branch=${r_branch}
+created=${r_created}
+description=${r_description}
+project=${r_project}
+project_root=${r_project_root}
+slug=${r_slug}
+EOF
+  else
+    cat > "${wt_path}/${META_FILE}" <<EOF
 base_branch=${r_base}
 created=${r_created}
 description=${r_description}
@@ -1214,6 +1467,7 @@ project_root=${r_project_root}
 slug=${r_slug}
 branch=${r_branch}
 EOF
+  fi
 }
 
 # wt doctor — scan real repos for state drift and offer to fix
@@ -1324,11 +1578,19 @@ cmd_doctor() {
       if [[ -d "${project_root}/${WORKTREES_DIR}" ]]; then
         for meta_file in "${project_root}/${WORKTREES_DIR}"/*/"${META_FILE}"; do
           [[ -f "$meta_file" ]] || continue
-          local m_base m_branch m_slug
+          local m_base m_branch m_slug m_type
           m_base=$(read_meta "$meta_file" "base_branch")
           m_branch=$(read_meta "$meta_file" "branch")
           m_slug=$(read_meta "$meta_file" "slug")
-          if [[ -z "$m_base" || -z "$m_branch" || -z "$m_slug" ]]; then
+          m_type=$(read_meta "$meta_file" "type")
+          # Open worktrees have no base_branch — only check branch and slug
+          local _corrupt=0
+          if [[ "$m_type" == "open" ]]; then
+            [[ -z "$m_branch" || -z "$m_slug" ]] && _corrupt=1
+          else
+            [[ -z "$m_base" || -z "$m_branch" || -z "$m_slug" ]] && _corrupt=1
+          fi
+          if (( _corrupt )); then
             local wt_name
             wt_name=$(basename "$(dirname "$meta_file")")
             output+="  ${RED}✗${RESET} Corrupt ${META_FILE} in ${BOLD}.worktrees/${wt_name}${RESET} (missing: base_branch/branch/slug)\n"
@@ -1439,6 +1701,8 @@ main() {
   shift || true
 
   case "$cmd" in
+    open)           cmd_open "$@" ;;
+    close)          cmd_close "$@" ;;
     new)            cmd_new "$@" ;;
     finish)         cmd_finish "$@" ;;
     sync)           cmd_sync "$@" ;;
