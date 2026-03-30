@@ -31,7 +31,7 @@ The pipeline is: `brainstorming` → `writing-plans` → `executing-plans` (call
 | `wt list` / `wt doctor` awareness | ✗ | ✓ |
 | Namespaced `wt/<slug>` branch | ✗ | ✓ |
 | Dependency hint | ✗ | ✓ (generic reminder) |
-| Rebase/squash finish strategy | ✗ | `wt finish` |
+| Rebase finish strategy | ✗ | `wt finish` |
 | Clean `wt abandon` (abandon) path | ✗ | ✓ |
 
 ### Command mapping

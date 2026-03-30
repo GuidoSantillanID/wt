@@ -1670,7 +1670,7 @@ git -C "$SYNC_PROJ" worktree remove "$SYNC_WT_INPROG" --force 2>/dev/null || tru
 git -C "$SYNC_PROJ" branch -D "wt/sync-inprog" 2>/dev/null || true
 git -C "$SYNC_PROJ" checkout -q main
 
-# ─── finish/pr — squash path after wt sync ──────────────────────────────────
+# ─── finish — rebase after wt sync ───────────────────────────────────────────
 # Isolated project so state doesn't pollute main REPO tests.
 SQ_PROJ="${TMPROOT}/sq-proj"
 mkdir -p "$SQ_PROJ"
@@ -1686,7 +1686,7 @@ git -C "$SQ_PROJ" add dev.txt
 git -C "$SQ_PROJ" commit -q -m "dev commit"
 git -C "$SQ_PROJ" checkout -q main
 
-section "wt finish — squash merge after wt sync"
+section "wt finish — rebase after wt sync"
 cd "$SQ_PROJ"
 git -C "$SQ_PROJ" checkout -q dev
 SQ_WT="${SQ_PROJ}/.worktrees/sq-test-task"
@@ -1709,29 +1709,29 @@ merge_check=$(git -C "$SQ_WT" rev-list --merges "dev..HEAD" | head -1)
 [[ -n "$merge_check" ]] \
   && pass "sanity: merge commit present after wt sync" \
   || fail "sanity: no merge commit found after wt sync"
-# wt finish --yes → squash path
+# wt finish --yes → rebase path (merge commits dropped by rebase)
 _tmp_sq=$(mktemp)
 stdout_sq=$(wt finish --yes 2>"$_tmp_sq")
 out_sq=$(cat "$_tmp_sq"); rm -f "$_tmp_sq"
-assert_contains       "squash finish reports Done"           "Done!"        "$out_sq"
-assert_contains       "squash finish uses squash strategy"   "squash"       "$out_sq"
-assert_eq             "finish stdout is main worktree path"  "$SQ_PROJ"     "$stdout_sq"
+assert_contains       "rebase finish reports Done"           "Done!"            "$out_sq"
+assert_contains       "rebase finish uses rebase strategy"   "Rebase successful" "$out_sq"
+assert_eq             "finish stdout is main worktree path"  "$SQ_PROJ"         "$stdout_sq"
 assert_dir_not_exists "sq worktree removed"                  "$SQ_WT"
 branch_sq=$(git -C "$SQ_PROJ" rev-parse --verify "wt/sq-test-task" 2>/dev/null || echo "gone")
-assert_eq             "sq branch deleted"                    "gone"         "$branch_sq"
-# Exactly 1 new commit on dev (the squash — not 2 separate commits)
+assert_eq             "sq branch deleted"                    "gone"             "$branch_sq"
+# Worktree commit replayed (1 new commit — "base advanced" was already on dev before finish)
 sq_new_count=$(git -C "$SQ_PROJ" rev-list "${dev_sq_before}..dev" | wc -l | tr -d ' ')
-assert_eq             "exactly 1 squash commit on dev"       "1"            "$sq_new_count"
-# Squash commit message matches description
+assert_eq             "replayed commit on dev"               "1"             "$sq_new_count"
+# Original commit message preserved (not replaced with description)
 sq_msg=$(git -C "$SQ_PROJ" log -1 --format="%s" dev)
-assert_eq             "squash commit message is description" "sq test task" "$sq_msg"
+assert_eq             "worktree commit msg preserved"        "worktree work" "$sq_msg"
 # Worktree files landed on dev
 git -C "$SQ_PROJ" checkout -q dev
 assert_file_exists    "wt-work.txt landed on dev"            "${SQ_PROJ}/wt-work.txt"
 assert_file_exists    "base-advance.txt landed on dev"       "${SQ_PROJ}/base-advance.txt"
 git -C "$SQ_PROJ" checkout -q main
 
-section "wt finish — squash pre-flight error when base advanced after sync"
+section "wt finish — rebase succeeds when base advanced after sync"
 cd "$SQ_PROJ"
 git -C "$SQ_PROJ" checkout -q dev
 SQ_PRE_WT="${SQ_PROJ}/.worktrees/sq-preflight-test"
@@ -1754,17 +1754,26 @@ echo "base-pf2" > "${SQ_PROJ}/base-pf2.txt"
 git -C "$SQ_PROJ" add base-pf2.txt
 git -C "$SQ_PROJ" commit -q -m "base pf advance 2"
 git -C "$SQ_PROJ" checkout -q main
-# wt finish --yes → squash path detected (merge commits exist), pre-flight fails
+# wt finish --yes → rebase succeeds despite base advancing after sync
 cd "$SQ_PRE_WT"
 _tmp_sq_pre=$(mktemp)
-wt finish --yes 2>"$_tmp_sq_pre" || true
+stdout_sq_pre=$(wt finish --yes 2>"$_tmp_sq_pre")
 out_sq_pre=$(cat "$_tmp_sq_pre"); rm -f "$_tmp_sq_pre"
-assert_contains   "squash pre-flight shows wt sync instruction" "wt sync" "$out_sq_pre"
-assert_dir_exists "sq preflight worktree preserved on error"       "$SQ_PRE_WT"
-# Cleanup
-cd "$SQ_PROJ"
-git -C "$SQ_PROJ" worktree remove "$SQ_PRE_WT" --force 2>/dev/null || true
-git -C "$SQ_PROJ" branch -D "wt/sq-preflight-test" 2>/dev/null || true
+assert_contains       "rebase finish reports Done"             "Done!"            "$out_sq_pre"
+assert_contains       "rebase finish uses rebase strategy"     "Rebase successful" "$out_sq_pre"
+assert_eq             "finish stdout is main worktree path"    "$SQ_PROJ"         "$stdout_sq_pre"
+assert_dir_not_exists "sq preflight worktree removed"          "$SQ_PRE_WT"
+branch_sq_pre=$(git -C "$SQ_PROJ" rev-parse --verify "wt/sq-preflight-test" 2>/dev/null || echo "gone")
+assert_eq             "sq preflight branch deleted"            "gone"             "$branch_sq_pre"
+# Work commit replayed with original message preserved
+pf_msg=$(git -C "$SQ_PROJ" log -1 --format="%s" dev)
+assert_eq             "preflight commit msg preserved"         "preflight work" "$pf_msg"
+# All files landed on dev
+git -C "$SQ_PROJ" checkout -q dev
+assert_file_exists    "wt-pf-work.txt landed on dev"           "${SQ_PROJ}/wt-pf-work.txt"
+assert_file_exists    "base-pf1.txt landed on dev"             "${SQ_PROJ}/base-pf1.txt"
+assert_file_exists    "base-pf2.txt landed on dev"             "${SQ_PROJ}/base-pf2.txt"
+git -C "$SQ_PROJ" checkout -q main
 
 section "wt pr — skips rebase when merge commits present"
 SQ_PR_PROJ="${TMPROOT}/sq-pr-proj"

@@ -196,9 +196,7 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 
 ### `wt finish [--yes|-y] [--force]`
 
-Strategy is auto-detected from `git rev-list --merges <base_branch>..HEAD`:
-- **No merge commits** → rebase path (linear history)
-- **Merge commits present** (from `wt sync`) → squash path (avoids re-conflict)
+Always rebases onto base branch. Merge commits from `wt sync` are dropped by the rebase (individual work commits are preserved).
 
 ```
 1. git rev-parse --show-toplevel → repo_root
@@ -206,24 +204,12 @@ Strategy is auto-detected from `git rev-list --merges <base_branch>..HEAD`:
 3. Read .wt-meta: base_branch, branch, description, project, project_root, slug
 4. Validate: no uncommitted tracked changes (git status --porcelain | grep -v '^??')
 5. If untracked files exist → warn + confirm "Untracked files will be lost" (only --force bypasses)
-6. Detect strategy: has_merges=$(git rev-list --merges <base_branch>..HEAD | head -1)
-7. get_main_worktree()
-
-SQUASH PATH (has_merges non-empty):
-  8. Pre-flight: git merge-base --is-ancestor <base_branch> HEAD
-     → if false: error "Run 'wt sync' first" (base has new commits since last sync)
-  9. squash_commit=$(git commit-tree HEAD^{tree} -p <base_branch> -m <description>)
-     (tree = HEAD's tree; parent = base_branch only; message = description from .wt-meta)
-  10. _ff_onto_base(squash_commit, base_branch, repo_root, branch)
-  11. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true, project_root)
-  12. Print main_wt to stdout (shell wrapper uses this to cd back)
-
-REBASE PATH (has_merges empty):
-  8. _rebase_onto_base(base_branch, branch, --prefer-local) — SIGINT-trapped internally
-     → on conflict: git rebase --abort; print "Run wt sync"; exit 1
-  9. _ff_onto_base(HEAD, base_branch, repo_root, branch)
-  10. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true, project_root)
-  11. Print main_wt to stdout (shell wrapper uses this to cd back)
+6. get_main_worktree()
+7. _rebase_onto_base(base_branch, branch, --prefer-local) — SIGINT-trapped internally
+   → on conflict: git rebase --abort; print manual rebase instructions; exit 1
+8. _ff_onto_base(HEAD, base_branch, repo_root, branch)
+9. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true, project_root)
+10. Print main_wt to stdout (shell wrapper uses this to cd back)
 ```
 
 ### `wt sync`
@@ -283,9 +269,7 @@ Key difference from `wt finish`: no confirmation, no fast-forward, no cleanup, n
 4. If no worktree found or merge fails: print manual instructions, exit 1
 ```
 
-Used by `cmd_finish` (both squash and rebase paths):
-- Squash path: `_ff_onto_base "$squash_commit" "$base_branch" "$repo_root" "$branch"`
-- Rebase path: `_ff_onto_base HEAD "$base_branch" "$repo_root" "$branch"`
+Used by `cmd_finish`: `_ff_onto_base HEAD "$base_branch" "$repo_root" "$branch"`
 
 ### `_rebase_onto_base base_branch branch [--prefer-local]` (shared helper)
 
@@ -303,8 +287,8 @@ Used by `cmd_finish` (both squash and rebase paths):
 4. Returns git rebase exit code — conflict handling left to caller
 ```
 
-Used by `cmd_finish` (rebase path only) and `cmd_pr` (clean branches only). Each caller handles conflict differently:
-- `cmd_finish` (rebase path): `git rebase --abort`, print "Run 'wt sync'", exit 1
+Used by `cmd_finish` and `cmd_pr` (clean branches only). Each caller handles conflict differently:
+- `cmd_finish`: `git rebase --abort`, print "Run 'wt sync'", exit 1
 - `cmd_pr`: leave in conflict state, print continue/abort instructions, exit 1
 
 `cmd_sync` does NOT use this helper — it uses `git merge` directly instead.
@@ -704,7 +688,7 @@ Two parallel feature branches merged:
 
 58. **SIGINT trap on rebase paths** — `_rebase_onto_base`, `cmd_sync`, and `cmd_pr` set a SIGINT trap before `git rebase` that runs `git rebase --abort` and exits 130 on Ctrl+C. Prevents abandoned in-progress rebases.
 
-59. **`--dry-run` for `finish`, `abandon`, `doctor`** — New flag previews what would happen without making any changes. `finish --dry-run` shows rebase/squash target, ff, and cleanup plan. `abandon --dry-run` shows commit count and worktree path. `doctor --dry-run` reports all issues without fixing any.
+59. **`--dry-run` for `finish`, `abandon`, `doctor`** — New flag previews what would happen without making any changes. `finish --dry-run` shows rebase target, ff, and cleanup plan. `abandon --dry-run` shows commit count and worktree path. `doctor --dry-run` reports all issues without fixing any.
 
 60. **`wt doctor` `.wt-meta` repair** — New `_repair_wt_meta` helper infers `.wt-meta` fields from git state. `wt doctor` now detects missing `.wt-meta` (check 2b) and corrupt `.wt-meta` (check 3) and offers to repair both. Previously, corrupt meta was reported but not fixable.
 
@@ -724,7 +708,15 @@ Two parallel feature branches merged:
 
 64. **`wt pr` skips rebase when merge commits present** — `cmd_pr` checks `git rev-list --merges <base>..HEAD` before calling `_rebase_onto_base`. If merge commits are present, the rebase is skipped. `--force-with-lease` push works correctly in both cases.
 
-### v16: Replace tmux session-kill with close-window hint (2026-03-19)
+### v16: Remove squash path from wt finish (2026-03-30)
+
+`wt finish` now always rebases, even when merge commits from `wt sync` are present. `git rebase` drops merge commits and replays only work commits — preserving individual commit messages on the base branch. The squash path (which collapsed all work into a single commit with the `.wt-meta` description) is removed.
+
+65. **Squash path removed from `wt finish`** — Strategy detection (`git rev-list --merges`), squash commit creation (`git commit-tree`), and the squash pre-flight ancestor check are all removed. The rebase path now handles all cases. Tradeoff: conflicts resolved during `wt sync` may recur during the final rebase.
+
+---
+
+### v17: Replace tmux session-kill with close-window hint (2026-03-19)
 
 **Problem:** `_cleanup_worktree` killed the tmux session named `<project>/<slug>` on finish/abandon. This didn't match real usage — users keep multiple tmux windows in one session and don't want the session destroyed. The code was also effectively dead: `claude_running_in_session()` always returned `false`, the session name format didn't match actual session names, and `tmux_session_exists()` was never true in practice.
 

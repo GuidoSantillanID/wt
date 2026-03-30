@@ -8,7 +8,7 @@
 #
 # COMMANDS
 #   wt new "<description>"                      Create a worktree with auto-named branch
-#   wt finish [--force]                          Integrate worktree into base (rebase or squash), clean up
+#   wt finish [--force]                          Integrate worktree into base (rebase), clean up
 #   wt sync                                     Merge local base branch into worktree (LLM-friendly)
 #   wt retarget [branch]                        Change this worktree's base branch
 #   wt abandon [--yes|-y] [--force]             Abandon worktree without merging, clean up
@@ -65,7 +65,7 @@
 #   - Worktrees live at <project>/.worktrees/<slug>/
 #   - Branch name: wt/<slug> (auto-generated from description)
 #   - .wt-meta stores key=value pairs (no quoting, read with cut -d= -f2-)
-#   - `wt finish` reads .wt-meta, safety-checks, integrates into base (rebase or squash), removes worktree+branch
+#   - `wt finish` reads .wt-meta, safety-checks, integrates into base (rebase), removes worktree+branch
 #   - `wt abandon` abandons the worktree without merging
 #   - Safety gates: --yes skips routine confirms; --force overrides non-skippable gates
 #   - Requires bash 4+ (macOS ships with 3.2; install via brew install bash)
@@ -209,7 +209,7 @@ wt — Git Worktree Lifecycle Tool
 
 USAGE
   wt new "<description>"                      Create a worktree with auto-named branch
-  wt finish [--force]                          Integrate worktree into base (rebase or squash), clean up
+  wt finish [--force]                          Integrate worktree into base (rebase), clean up
   wt sync                                     Merge local base branch into worktree (LLM-friendly)
   wt retarget [branch]                        Change this worktree's base branch
   wt abandon [--yes|-y] [--force]             Abandon worktree without merging, clean up
@@ -262,7 +262,6 @@ NOTES
   • `wt pr` requires the GitHub CLI (gh) — https://cli.github.com
   • `wt pr` rebases before pushing when the branch is clean; skips rebase when merge commits are present (from wt sync)
   • After merging a PR on GitHub, run `wt abandon` to clean up the worktree
-  • `wt finish` auto-detects merge commits from `wt sync` and uses squash instead of rebase
   • Projects are tracked in ${XDG_CONFIG_HOME:-~/.config}/wt/projects (one path per line)
   • Override registry path: export WT_REGISTRY=/path/to/registry
   • `wt open` creates a wt/<slug> branch off an existing branch — full lifecycle (finish/abandon/sync) works
@@ -719,37 +718,13 @@ cmd_finish() {
   main_wt=$(get_main_worktree)
   [[ -z "$main_wt" ]] && error "Could not determine main worktree path"
 
-  # Detect merge commits (created by wt sync) to choose strategy.
-  # Merge commits present → squash path. Clean history → rebase path.
-  local has_merges use_squash
-  has_merges=$(git rev-list --merges "${base_branch}..HEAD" | head -1)
-  use_squash=0
-  [[ -n "$has_merges" ]] && use_squash=1
-
-  if (( use_squash )); then
-    # Pre-flight: base_branch must be an ancestor of HEAD (i.e. wt sync was run).
-    # If it's not, there are new base commits the worktree hasn't merged yet.
-    if ! git merge-base --is-ancestor "$base_branch" HEAD 2>/dev/null; then
-      warn "Base branch has commits not yet in this worktree."
-      echo -e "  Run 'wt sync' first, then retry 'wt finish'." >&2
-      exit 1
-    fi
-    # Create a single squash commit: tree from HEAD (all changes), parent = base_branch only.
-    local squash_commit
-    squash_commit=$(git commit-tree "HEAD^{tree}" -p "$base_branch" -m "$description")
-    # Fast-forward base to the squash commit.
-    _ff_onto_base "$squash_commit" "$base_branch" "$repo_root" "$branch"
-    _cleanup_worktree "$repo_root" "$branch" "$main_wt" "$project" "$slug" "force" "$project_root"
-    success "Done! Worktree squash-merged and cleaned up."
-    echo "$main_wt"
-    return 0
-  fi
-
-  # Rebase path (no merge commits — clean linear history)
+  # Rebase onto base branch
   if ! _rebase_onto_base "$base_branch" "$branch" --prefer-local; then
     git rebase --abort 2>/dev/null || true
     warn "Rebase conflict. Aborted."
-    echo -e "  Run 'wt sync' to merge the base branch, resolve conflicts, then retry 'wt finish'." >&2
+    echo -e "  Resolve conflicts manually: git rebase ${base_branch}" >&2
+    echo -e "  Then resolve each conflict, 'git add' the file, and 'git rebase --continue'." >&2
+    echo -e "  When done, re-run 'wt finish'." >&2
     exit 1
   fi
   trap - INT

@@ -137,7 +137,7 @@ wt doctor
 - Both support the full lifecycle: `finish`, `abandon`, `sync`, `retarget`, `pr`
 - A `.wt-meta` file in each worktree stores metadata (base branch, description, timestamps)
 - `.worktrees/` and `.wt-meta` are excluded from git via `.git/info/exclude` (never committed)
-- `wt finish` integrates the worktree branch into its base (rebase or squash, auto-detected), fast-forwards the base, and removes the worktree and branch
+- `wt finish` rebases the worktree branch onto its base, fast-forwards the base, and removes the worktree and branch
 - `wt abandon` removes the worktree and branch without merging
 
 ## Commands reference
@@ -171,18 +171,12 @@ Integrates the worktree back into its base branch and cleans up. No confirmation
 
 Pass `--force` to override the untracked-files safety gate.
 
-**Strategy (auto-detected):**
-- **No merge commits** (clean history): rebases onto base and fast-forwards → linear history
-- **Merge commits present** (from `wt sync`): squash-merges into base → single commit on base, avoids re-encountering conflicts
-
 **Steps (in order):**
 1. Verifies you're in a worktree (not the main checkout) — errors if not
 2. Aborts if there are tracked uncommitted changes
 3. Warns if there are untracked files (they will be permanently deleted) — only `--force` bypasses
-4. Detects strategy (rebase vs squash) based on merge commits in `<base>..HEAD`
-   - **Squash path**: requires base to be an ancestor of HEAD (i.e. `wt sync` was run). If base has new commits since the last `wt sync`, errors with a prompt to run `wt sync` again.
-   - **Rebase path**: fetches remote base (best-effort). Rebases — SIGINT-trapped; aborts cleanly on Ctrl+C; aborts and prints manual instructions on conflict.
-5. Fast-forwards base branch to the integrated tip (checks all worktrees, not just main)
+4. Rebases onto base branch — fetches remote base (best-effort), SIGINT-trapped, aborts cleanly on Ctrl+C or conflict. Merge commits from `wt sync` are dropped by the rebase (individual work commits are preserved).
+5. Fast-forwards base branch to the rebased tip (checks all worktrees, not just main)
 6. Removes worktree directory and branch
 7. Inside tmux: prints a reminder to close the current window
 8. `cd`s back to main checkout (via shell wrapper)
@@ -371,13 +365,15 @@ wt abandon
 
 ### Recovering from a conflict in `wt finish`
 
-If `wt finish` aborts due to a rebase conflict:
+If `wt finish` aborts due to a rebase conflict, resolve it manually:
 
 ```bash
-# Merge base into worktree instead (LLM-friendly conflict output)
-wt sync                    # merge base into worktree (Claude resolves conflicts)
-wt finish                  # squash path auto-detected — no rebase, no re-conflict
+git rebase <base-branch>   # restart the rebase
+# resolve each conflict, git add, git rebase --continue
+wt finish                  # re-run after rebase completes
 ```
+
+Alternatively, use `wt sync` first for LLM-friendly conflict output, but note that conflicts may recur during the final rebase since `wt sync` creates a merge commit that the rebase drops.
 
 ### Keeping worktrees visible in tmux
 
