@@ -471,7 +471,7 @@ cd "$REPO"
 out_main=$(wt sync 2>&1 || true)
 assert_contains "errors when not in a worktree" "main checkout" "$out_main"
 
-section "wt sync — merges diverged base"
+section "wt sync — rebases onto diverged base"
 cd "$REPO"
 git -C "$REPO" checkout -q dev
 WT_PATH_SYNC="${REPO}/.worktrees/sync-test"
@@ -486,16 +486,17 @@ echo "base-advance" > "${REPO}/base-advance.txt"
 git -C "$REPO" add base-advance.txt
 git -C "$REPO" commit -q -m "base advanced"
 git -C "$REPO" checkout -q dev
-# Sync from worktree — now merges (not rebases)
+# Sync from worktree — rebases onto base
 cd "$WT_PATH_SYNC"
 out_sync=$(wt sync 2>&1)
-assert_contains "sync reports merge success" "Merged" "$out_sync"
+assert_contains "sync reports rebase success" "Rebased" "$out_sync"
 # Verify base commit is reachable in worktree
 assert_contains "base commit reachable" "base advanced" "$(git -C "$WT_PATH_SYNC" log --oneline -5)"
 # Verify worktree commit still present
 assert_contains "worktree commit preserved" "worktree commit" "$(git -C "$WT_PATH_SYNC" log --oneline -5)"
-# Verify merge commit present (not linear rebase)
-assert_contains "merge commit present" "Merge" "$(git -C "$WT_PATH_SYNC" log --oneline -10)"
+# Verify linear history (no merge commits)
+sync_merges=$(git -C "$WT_PATH_SYNC" rev-list --merges "dev..HEAD" | head -1)
+assert_eq "no merge commits after sync" "" "$sync_merges"
 # No stdout (stdout/stderr contract)
 stdout_sync=$(wt sync 2>/dev/null)
 assert_eq "no stdout from sync" "" "$stdout_sync"
@@ -1314,7 +1315,7 @@ git -C "$REPO" worktree remove "$WT_CONF" --force 2>/dev/null || true
 git -C "$REPO" branch -D "wt/conf-test" 2>/dev/null || true
 git -C "$REPO" checkout -q dev
 
-section "T1b: wt sync — merge conflict leaves merge paused"
+section "T1b: wt sync — rebase conflict leaves rebase paused"
 cd "$REPO"
 git -C "$REPO" checkout -q dev
 WT_SYNC_CONF="${REPO}/.worktrees/sync-conf-test"
@@ -1328,11 +1329,11 @@ git -C "$REPO" add sync-conflict.txt
 git -C "$REPO" commit -q -m "base sync conflict commit"
 cd "$WT_SYNC_CONF"
 out_t1b=$(WT_REGISTRY="$registry_file" bash "$WT" sync 2>&1) || true
-assert_contains "sync reports merge conflict" "conflict" "$out_t1b"
-assert_contains "sync shows merge continue instruction" "git merge --continue" "$out_t1b"
+assert_contains "sync reports rebase conflict" "conflict" "$out_t1b"
+assert_contains "sync shows rebase continue instruction" "git rebase --continue" "$out_t1b"
 assert_dir_exists "worktree preserved after sync conflict" "$WT_SYNC_CONF"
-# Cleanup: abort merge, remove files
-git -C "$WT_SYNC_CONF" merge --abort 2>/dev/null || true
+# Cleanup: abort rebase, remove files
+git -C "$WT_SYNC_CONF" rebase --abort 2>/dev/null || true
 cd "$REPO"
 git -C "$REPO" checkout -q dev
 git -C "$REPO" rm -qf sync-conflict.txt 2>/dev/null || true
@@ -1619,12 +1620,11 @@ assert_contains "reports conflict" "conflict" "$out_conflict"
 assert_contains "lists conflicted file" "README.md" "$out_conflict"
 assert_contains "shows conflict line number" "README.md:1" "$out_conflict"
 assert_contains "shows conflict count" "1 conflict" "$out_conflict"
-assert_contains "shows auto-merged summary" "Auto-merged:" "$out_conflict"
-assert_contains "lists auto-merged file" "data.txt" "$out_conflict"
-assert_contains "shows HEAD commit subject" "wt changed readme" "$out_conflict"
-assert_contains "shows base commit subject" "base changed readme" "$out_conflict"
-assert_contains "shows merge continue instruction" "git merge --continue" "$out_conflict"
-git -C "$SYNC_WT_CONFLICT" merge --abort 2>/dev/null || true
+assert_contains "shows applying commit" "Applying:" "$out_conflict"
+assert_contains "shows commit subject" "wt changed readme" "$out_conflict"
+assert_contains "shows onto base" "Onto:" "$out_conflict"
+assert_contains "shows rebase continue instruction" "git rebase --continue" "$out_conflict"
+git -C "$SYNC_WT_CONFLICT" rebase --abort 2>/dev/null || true
 cd "$SYNC_PROJ"
 git -C "$SYNC_PROJ" worktree remove "$SYNC_WT_CONFLICT" --force 2>/dev/null || true
 git -C "$SYNC_PROJ" branch -D "wt/sync-conflict" 2>/dev/null || true
@@ -1706,9 +1706,9 @@ dev_sq_before=$(git -C "$SQ_PROJ" rev-parse dev)
 cd "$SQ_WT"
 wt sync 2>/dev/null
 merge_check=$(git -C "$SQ_WT" rev-list --merges "dev..HEAD" | head -1)
-[[ -n "$merge_check" ]] \
-  && pass "sanity: merge commit present after wt sync" \
-  || fail "sanity: no merge commit found after wt sync"
+[[ -z "$merge_check" ]] \
+  && pass "sanity: no merge commit after rebase-based sync" \
+  || fail "sanity: unexpected merge commit after sync"
 # wt finish --yes → rebase path (merge commits dropped by rebase)
 _tmp_sq=$(mktemp)
 stdout_sq=$(wt finish --yes 2>"$_tmp_sq")
@@ -1775,7 +1775,57 @@ assert_file_exists    "base-pf1.txt landed on dev"             "${SQ_PROJ}/base-
 assert_file_exists    "base-pf2.txt landed on dev"             "${SQ_PROJ}/base-pf2.txt"
 git -C "$SQ_PROJ" checkout -q main
 
-section "wt pr — skips rebase when merge commits present"
+section "wt finish — no re-conflict after sync resolves conflict"
+NORC_PROJ="${TMPROOT}/norc-proj"
+mkdir -p "$NORC_PROJ"
+git -C "$NORC_PROJ" init -q -b main
+git -C "$NORC_PROJ" config user.email "test@test.com"
+git -C "$NORC_PROJ" config user.name "Test"
+echo "original" > "$NORC_PROJ/shared.txt"
+git -C "$NORC_PROJ" add shared.txt
+git -C "$NORC_PROJ" commit -q -m "initial"
+git -C "$NORC_PROJ" checkout -q -b dev
+echo "dev baseline" > "$NORC_PROJ/dev.txt"
+git -C "$NORC_PROJ" add dev.txt
+git -C "$NORC_PROJ" commit -q -m "dev commit"
+git -C "$NORC_PROJ" checkout -q main
+cd "$NORC_PROJ"
+git -C "$NORC_PROJ" checkout -q dev
+NORC_WT="${NORC_PROJ}/.worktrees/norc-test"
+wt new "norc test" 2>/dev/null
+# Worktree: modify shared.txt
+echo "worktree change" > "${NORC_WT}/shared.txt"
+git -C "$NORC_WT" add shared.txt
+git -C "$NORC_WT" commit -q -m "worktree edits shared"
+# Base: modify same file (conflict)
+git -C "$NORC_PROJ" checkout -q dev
+echo "base change" > "${NORC_PROJ}/shared.txt"
+git -C "$NORC_PROJ" add shared.txt
+git -C "$NORC_PROJ" commit -q -m "base edits shared"
+git -C "$NORC_PROJ" checkout -q main
+# wt sync → rebase conflict
+cd "$NORC_WT"
+wt sync 2>/dev/null < /dev/null || true
+# Resolve the conflict
+echo "merged resolution" > "${NORC_WT}/shared.txt"
+git -C "$NORC_WT" add shared.txt
+GIT_EDITOR=true git -C "$NORC_WT" rebase --continue 2>/dev/null
+# wt finish — should succeed without re-conflict
+_tmp_norc=$(mktemp)
+stdout_norc=$(wt finish --yes 2>"$_tmp_norc")
+out_norc=$(cat "$_tmp_norc"); rm -f "$_tmp_norc"
+assert_contains       "no-reconf finish reports Done"          "Done!"              "$out_norc"
+assert_eq             "no-reconf finish stdout is main wt"     "$NORC_PROJ"         "$stdout_norc"
+assert_dir_not_exists "no-reconf worktree removed"             "$NORC_WT"
+branch_norc=$(git -C "$NORC_PROJ" rev-parse --verify "wt/norc-test" 2>/dev/null || echo "gone")
+assert_eq             "no-reconf branch deleted"               "gone"               "$branch_norc"
+# Resolved content landed on dev
+git -C "$NORC_PROJ" checkout -q dev
+norc_content=$(cat "${NORC_PROJ}/shared.txt")
+assert_eq             "resolved content on dev"                "merged resolution"  "$norc_content"
+git -C "$NORC_PROJ" checkout -q main
+
+section "wt pr — always rebases after sync"
 SQ_PR_PROJ="${TMPROOT}/sq-pr-proj"
 mkdir -p "$SQ_PR_PROJ"
 git -C "$SQ_PR_PROJ" init -q -b main
@@ -1804,7 +1854,7 @@ echo "dev-advance" > "${SQ_PR_PROJ}/dev-advance.txt"
 git -C "$SQ_PR_PROJ" add dev-advance.txt
 git -C "$SQ_PR_PROJ" commit -q -m "dev advanced"
 git -C "$SQ_PR_PROJ" checkout -q main
-# wt sync → merge commit
+# wt sync → rebase (no merge commit)
 cd "$SQ_PR_WT"
 wt sync 2>/dev/null
 # Mock gh
@@ -1820,7 +1870,7 @@ cd "$SQ_PR_WT"
 _tmp_sq_pr=$(mktemp)
 stdout_sq_pr=$(PATH="${SQ_PR_MOCK}:${PATH}" WT_REGISTRY="$registry_file" bash "$WT" pr --yes 2>"$_tmp_sq_pr")
 out_sq_pr=$(cat "$_tmp_sq_pr"); rm -f "$_tmp_sq_pr"
-assert_not_contains "pr skips rebase with merge commits"  "Rebased"            "$out_sq_pr"
+assert_contains     "pr rebases after sync"               "Rebased"            "$out_sq_pr"
 assert_contains     "pr still creates PR"                 "PR created"         "$out_sq_pr"
 assert_contains     "pr returns URL on stdout"            "https://github.com" "$stdout_sq_pr"
 # Cleanup

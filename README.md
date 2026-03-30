@@ -175,7 +175,7 @@ Pass `--force` to override the untracked-files safety gate.
 1. Verifies you're in a worktree (not the main checkout) — errors if not
 2. Aborts if there are tracked uncommitted changes
 3. Warns if there are untracked files (they will be permanently deleted) — only `--force` bypasses
-4. Rebases onto base branch — fetches remote base (best-effort), SIGINT-trapped, aborts cleanly on Ctrl+C or conflict. Merge commits from `wt sync` are dropped by the rebase (individual work commits are preserved).
+4. Rebases onto base branch — fetches remote base (best-effort), SIGINT-trapped, aborts cleanly on Ctrl+C or conflict. If `wt sync` was run first, this is typically a no-op.
 5. Fast-forwards base branch to the rebased tip (checks all worktrees, not just main)
 6. Removes worktree directory and branch
 7. Inside tmux: prints a reminder to close the current window
@@ -184,7 +184,7 @@ Pass `--force` to override the untracked-files safety gate.
 
 ### `wt sync`
 
-Merges the **local** base branch into the current worktree branch. Keeps long-lived worktrees current without finishing them. Designed for LLM-assisted conflict resolution — when conflicts occur, shows file-level context (conflicted lines, commit history for both sides) so the LLM can resolve clear cases autonomously and ask for guidance on ambiguous ones.
+Rebases the current worktree branch onto the **local** base branch. Keeps long-lived worktrees current without finishing them. Designed for LLM-assisted conflict resolution — when conflicts occur, shows file-level context (conflicted lines, commit being applied) so the LLM can resolve clear cases autonomously and ask for guidance on ambiguous ones.
 
 **Steps:**
 1. Verifies you're in a worktree — errors if not
@@ -192,17 +192,17 @@ Merges the **local** base branch into the current worktree branch. Keeps long-li
 3. Aborts if there are uncommitted tracked changes (untracked files are allowed)
 4. Errors if the base branch ref doesn't exist locally
 5. If already up to date (base is an ancestor of HEAD), exits with success
-6. Runs `git merge <base_branch>` — exits on success
-7. On conflict: lists conflicted files with line numbers and commit context, exits 1
+6. Runs `git rebase <base_branch>` — exits on success
+7. On conflict: lists conflicted files with line numbers and the commit being applied, exits 1
 
 **When conflicts occur (LLM flow):**
 1. Read each conflicted file — both sides of every `<<<<<<<`/`=======`/`>>>>>>>` marker
 2. If the resolution is clear: resolve and explain what was done
 3. If the resolution requires product/business knowledge: explain both sides and ask the user
-4. `git add <resolved-files>`, then `git merge --continue`
-5. To abort: `git merge --abort`
+4. `git add <resolved-files>`, then `git rebase --continue`
+5. To abort: `git rebase --abort`
 
-Unlike `wt finish`, sync does not merge into the base, remove the worktree, or change your working directory.
+Unlike `wt finish`, sync does not fast-forward the base, remove the worktree, or change your working directory. Conflicts resolved during sync will not recur during `wt finish`.
 
 ### `wt retarget [branch]`
 
@@ -218,7 +218,7 @@ wt retarget main
 wt retarget
 ```
 
-After retargeting, run `wt sync` if you want to rebase the working branch onto the new base immediately.
+After retargeting, run `wt sync` to rebase the working branch onto the new base immediately.
 
 ### `wt abandon [--yes|-y] [--force]`
 
@@ -248,7 +248,7 @@ Pushes the worktree branch and opens a GitHub PR. Requires the [GitHub CLI](http
 1. Verifies you're in a worktree — errors if not
 2. Aborts if there are uncommitted changes
 3. Shows current base branch with a hint to use `wt retarget` to change it
-4. If no merge commits in `<base>..HEAD`: fetches and rebases onto `origin/<base_branch>` — pauses on conflicts. If merge commits are present (from `wt sync`): skips rebase to avoid re-encountering resolved conflicts.
+4. Fetches and rebases onto `origin/<base_branch>` — pauses on conflicts.
 5. Pushes to origin with `--force-with-lease` (needed after rebase rewrites history)
 6. If a PR already exists for this branch, prints the URL and returns
 7. Auto-generates the PR body from commits on the branch (`git log --oneline` as a bullet list)
@@ -365,15 +365,13 @@ wt abandon
 
 ### Recovering from a conflict in `wt finish`
 
-If `wt finish` aborts due to a rebase conflict, resolve it manually:
+If `wt finish` aborts due to a rebase conflict:
 
 ```bash
-git rebase <base-branch>   # restart the rebase
+wt sync                    # rebase onto base with LLM-friendly conflict output
 # resolve each conflict, git add, git rebase --continue
-wt finish                  # re-run after rebase completes
+wt finish                  # re-run — conflicts won't recur
 ```
-
-Alternatively, use `wt sync` first for LLM-friendly conflict output, but note that conflicts may recur during the final rebase since `wt sync` creates a merge commit that the rebase drops.
 
 ### Keeping worktrees visible in tmux
 

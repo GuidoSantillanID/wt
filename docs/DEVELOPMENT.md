@@ -206,7 +206,7 @@ Always rebases onto base branch. Merge commits from `wt sync` are dropped by the
 5. If untracked files exist → warn + confirm "Untracked files will be lost" (only --force bypasses)
 6. get_main_worktree()
 7. _rebase_onto_base(base_branch, branch, --prefer-local) — SIGINT-trapped internally
-   → on conflict: git rebase --abort; print manual rebase instructions; exit 1
+   → on conflict: git rebase --abort; print "Run wt sync"; exit 1
 8. _ff_onto_base(HEAD, base_branch, repo_root, branch)
 9. _cleanup_worktree(repo_root, branch, main_wt, project, slug, force=true, project_root)
 10. Print main_wt to stdout (shell wrapper uses this to cd back)
@@ -224,14 +224,14 @@ Always rebases onto base branch. Merge commits from `wt sync` are dropped by the
 7. Check: no uncommitted tracked changes (git status --porcelain | grep -v '^??')
 8. git rev-parse --verify <base_branch> → error if not found locally
 9. git merge-base --is-ancestor <base_branch> HEAD → if true, "Already up to date", return 0
-10. git merge <base_branch>
+10. git rebase <base_branch> (SIGINT-trapped)
     → on success: print success message; return 0
     → on conflict: show LLM-friendly output (conflicted files with line numbers,
-                   commit context for both sides), print git merge --continue instructions, exit 1
+                   REBASE_HEAD commit info), print git rebase --continue instructions, exit 1
 ```
 
 Key difference from `wt finish`: no confirmation, no fast-forward, no cleanup, no cd.
-**Merge-based** — produces a merge commit; all conflicts surface in one round.
+**Rebase-based** — linear history, no merge commit. Conflicts resolved here won't recur in `wt finish`.
 **Local base only** — no `git fetch`; user controls what's on the local base branch.
 **Untracked files allowed** — only tracked uncommitted changes block.
 **Safe for Claude Code** to invoke autonomously.
@@ -288,17 +288,16 @@ Used by `cmd_finish`: `_ff_onto_base HEAD "$base_branch" "$repo_root" "$branch"`
 ```
 
 Used by `cmd_finish` and `cmd_pr` (clean branches only). Each caller handles conflict differently:
-- `cmd_finish`: `git rebase --abort`, print "Run 'wt sync'", exit 1
+- `cmd_finish`: `git rebase --abort`, print "Run 'wt sync'", exit 1 (sync rebases first, so finish's rebase is then trivial)
 - `cmd_pr`: leave in conflict state, print continue/abort instructions, exit 1
 
-`cmd_sync` does NOT use this helper — it uses `git merge` directly instead.
+`cmd_sync` does NOT use this helper — it calls `git rebase` directly (no fetch, local-only).
 
 `cmd_pr` does NOT use `--prefer-local`: the PR targets the remote branch, so
 rebasing onto local-only commits would include unpushed base work in the PR diff.
 
-`cmd_pr` skips `_rebase_onto_base` entirely when merge commits are present in `<base>..HEAD`
-(detected via `git rev-list --merges`). This avoids re-encountering conflicts already resolved
-by `wt sync`.
+`cmd_pr` always calls `_rebase_onto_base` — since `wt sync` now rebases (no merge commits),
+there is no need to detect and skip.
 
 ### `wt abandon [--yes|-y] [--force]`
 
@@ -712,11 +711,21 @@ Two parallel feature branches merged:
 
 `wt finish` now always rebases, even when merge commits from `wt sync` are present. `git rebase` drops merge commits and replays only work commits — preserving individual commit messages on the base branch. The squash path (which collapsed all work into a single commit with the `.wt-meta` description) is removed.
 
-65. **Squash path removed from `wt finish`** — Strategy detection (`git rev-list --merges`), squash commit creation (`git commit-tree`), and the squash pre-flight ancestor check are all removed. The rebase path now handles all cases. Tradeoff: conflicts resolved during `wt sync` may recur during the final rebase.
+65. **Squash path removed from `wt finish`** — Strategy detection (`git rev-list --merges`), squash commit creation (`git commit-tree`), and the squash pre-flight ancestor check are all removed. The rebase path now handles all cases.
+
+### v17: `wt sync` changed from merge to rebase (2026-03-30)
+
+`wt sync` now uses `git rebase <base_branch>` instead of `git merge`. Eliminates the double-conflict problem where conflicts resolved during sync recurred during finish (finish's rebase dropped the merge commit and replayed original commits). Now both sync and finish use rebase — conflicts resolved once during sync don't recur.
+
+66. **`wt sync` rebase-based** — `cmd_sync` calls `git rebase` directly (no fetch, local-only). SIGINT-trapped. Conflict output adapted: uses `REBASE_HEAD` instead of `MERGE_HEAD`, shows "Applying:" commit info and "Onto:" base info. Auto-merged files section removed (rebase applies one commit at a time).
+
+67. **`wt pr` always rebases** — Merge-commit detection (`pr_has_merges`) removed from `cmd_pr`. Always calls `_rebase_onto_base` since `wt sync` no longer creates merge commits.
+
+68. **`wt finish` error message restored** — Conflict error now says "Run 'wt sync'" again (no longer a loop since sync rebases).
 
 ---
 
-### v17: Replace tmux session-kill with close-window hint (2026-03-19)
+### v18: Replace tmux session-kill with close-window hint (2026-03-19)
 
 **Problem:** `_cleanup_worktree` killed the tmux session named `<project>/<slug>` on finish/abandon. This didn't match real usage — users keep multiple tmux windows in one session and don't want the session destroyed. The code was also effectively dead: `claude_running_in_session()` always returned `false`, the session name format didn't match actual session names, and `tmux_session_exists()` was never true in practice.
 

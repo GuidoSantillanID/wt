@@ -50,5 +50,5 @@ When conflicts occur after `wt sync`:
 1. Read every conflicted file (look for `<<<<<<<`/`=======`/`>>>>>>>` markers)
 2. If the resolution is clear: resolve it and explain what you did
 3. If it requires product/business knowledge: explain both sides and ask
-4. `git add <resolved-files>`, then `git merge --continue`
-5. To abort: `git merge --abort`
+4. `git add <resolved-files>`, then `git rebase --continue`
+5. To abort: `git rebase --abort`

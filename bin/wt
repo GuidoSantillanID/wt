@@ -9,7 +9,7 @@
 # COMMANDS
 #   wt new "<description>"                      Create a worktree with auto-named branch
 #   wt finish [--force]                          Integrate worktree into base (rebase), clean up
-#   wt sync                                     Merge local base branch into worktree (LLM-friendly)
+#   wt sync                                     Rebase worktree onto local base branch (LLM-friendly)
 #   wt retarget [branch]                        Change this worktree's base branch
 #   wt abandon [--yes|-y] [--force]             Abandon worktree without merging, clean up
 #   wt pr [--draft] [--yes|-y]                  Push branch and open a GitHub PR (requires gh)
@@ -210,7 +210,7 @@ wt — Git Worktree Lifecycle Tool
 USAGE
   wt new "<description>"                      Create a worktree with auto-named branch
   wt finish [--force]                          Integrate worktree into base (rebase), clean up
-  wt sync                                     Merge local base branch into worktree (LLM-friendly)
+  wt sync                                     Rebase worktree onto local base branch (LLM-friendly)
   wt retarget [branch]                        Change this worktree's base branch
   wt abandon [--yes|-y] [--force]             Abandon worktree without merging, clean up
   wt pr [--draft] [--yes|-y]                  Push branch and open a GitHub PR (requires gh)
@@ -258,9 +258,9 @@ NOTES
   • `wt go <branch-or-slug>` navigates to an existing worktree (useful after reopening a shell)
   • Pass --yes / -y to wt abandon or wt pr to skip confirmation prompts
   • Pass --force to wt finish or wt abandon to override non-skippable safety gates
-  • `wt sync` merges local base into the worktree — on conflict, shows LLM-friendly context
+  • `wt sync` rebases the worktree onto the local base — on conflict, shows LLM-friendly context
   • `wt pr` requires the GitHub CLI (gh) — https://cli.github.com
-  • `wt pr` rebases before pushing when the branch is clean; skips rebase when merge commits are present (from wt sync)
+  • `wt pr` rebases before pushing
   • After merging a PR on GitHub, run `wt abandon` to clean up the worktree
   • Projects are tracked in ${XDG_CONFIG_HOME:-~/.config}/wt/projects (one path per line)
   • Override registry path: export WT_REGISTRY=/path/to/registry
@@ -722,9 +722,8 @@ cmd_finish() {
   if ! _rebase_onto_base "$base_branch" "$branch" --prefer-local; then
     git rebase --abort 2>/dev/null || true
     warn "Rebase conflict. Aborted."
-    echo -e "  Resolve conflicts manually: git rebase ${base_branch}" >&2
-    echo -e "  Then resolve each conflict, 'git add' the file, and 'git rebase --continue'." >&2
-    echo -e "  When done, re-run 'wt finish'." >&2
+    echo -e "  Run 'wt sync' to rebase onto ${base_branch} and resolve conflicts." >&2
+    echo -e "  Then re-run 'wt finish'." >&2
     exit 1
   fi
   trap - INT
@@ -740,7 +739,7 @@ cmd_finish() {
   echo "$main_wt"
 }
 
-# wt sync — merge local base branch into worktree (LLM-friendly)
+# wt sync — rebase worktree onto local base branch (LLM-friendly)
 cmd_sync() {
   local repo_root
   repo_root=$(git rev-parse --show-toplevel 2>/dev/null) \
@@ -791,36 +790,23 @@ cmd_sync() {
     return 0
   fi
 
-  info "Merging ${base_branch} into ${branch}..."
-  local merge_output
-  if merge_output=$(git merge --no-edit "${base_branch}" 2>&1); then
-    success "Merged ${base_branch} into ${branch}."
+  info "Rebasing ${branch} onto ${base_branch}..."
+  trap 'git rebase --abort 2>/dev/null || true; warn "Interrupted."; exit 130' INT
+  local rebase_output
+  if rebase_output=$(git rebase "${base_branch}" 2>&1); then
+    trap - INT
+    success "Rebased ${branch} onto ${base_branch}."
   else
-    warn "Merge conflicts detected."
+    trap - INT
+    warn "Rebase conflict."
     echo "" >&2
 
     # Determine conflicted files
     local conflicted_set
     conflicted_set=$(git diff --name-only --diff-filter=U)
 
-    # Show auto-merged files (appeared in git output but not in conflict set)
-    local auto_merged_str=""
-    while IFS= read -r f; do
-      [[ -z "$f" ]] && continue
-      if ! printf '%s\n' "$conflicted_set" | grep -qxF "$f"; then
-        [[ -n "$auto_merged_str" ]] && auto_merged_str="${auto_merged_str}, "
-        auto_merged_str="${auto_merged_str}${f}"
-      fi
-    done < <(printf '%s\n' "$merge_output" | grep '^Auto-merging ' | awk '{print $2}')
-    if [[ -n "$auto_merged_str" ]]; then
-      echo "✓ Auto-merged: ${auto_merged_str}" >&2
-      echo "" >&2
-    fi
-
     # Show conflicted files with line numbers and commit context
     echo "✗ Conflicted files:" >&2
-    local merge_base
-    merge_base=$(git merge-base HEAD MERGE_HEAD)
     while IFS= read -r file; do
       [[ -z "$file" ]] && continue
       local lines count label
@@ -828,17 +814,18 @@ cmd_sync() {
       count=$(grep -c '^<<<<<<<' "$file" || echo 0)
       [[ "$count" -eq 1 ]] && label="conflict" || label="conflicts"
       echo "  ${file}:${lines} (${count} ${label})" >&2
-      echo "    HEAD:" >&2
-      git log --oneline "${merge_base}..HEAD" -- "$file" | sed 's/^/      /' >&2
-      echo "    ${base_branch}:" >&2
-      git log --oneline "${merge_base}..MERGE_HEAD" -- "$file" | sed 's/^/      /' >&2
+      # Show the commit being rebased (REBASE_HEAD)
+      if git rev-parse --verify REBASE_HEAD &>/dev/null; then
+        echo "    Applying: $(git log --oneline -1 REBASE_HEAD)" >&2
+      fi
+      echo "    Onto: ${base_branch} (tip)" >&2
     done <<< "$conflicted_set"
 
     echo "" >&2
     warn "Resolve conflicts, then run:"
     echo -e "  git add <resolved-files>" >&2
-    echo -e "  git merge --continue" >&2
-    echo -e "  To abort:  git merge --abort" >&2
+    echo -e "  git rebase --continue" >&2
+    echo -e "  To abort:  git rebase --abort" >&2
     exit 1
   fi
 }
@@ -973,20 +960,13 @@ cmd_pr() {
   git remote get-url origin &>/dev/null \
     || error "No 'origin' remote configured. 'wt pr' requires a remote to push to."
 
-  # Skip rebase when merge commits are present (created by wt sync).
-  # Rebasing would re-encounter conflicts already resolved by the merge.
-  # Use || true so an unresolvable base_branch ref (remote-only after retarget) defaults to rebase.
-  local pr_has_merges
-  pr_has_merges=$(git rev-list --merges "${base_branch}..HEAD" 2>/dev/null | head -1 || true)
-  if [[ -z "$pr_has_merges" ]]; then
-    if ! _rebase_onto_base "$base_branch" "$branch"; then
-      warn "Rebase paused — conflicts detected."
-      echo -e "  Fix conflicts, then:  git add <files> && git rebase --continue" >&2
-      echo -e "  To abort:             git rebase --abort && git checkout ${branch}" >&2
-      exit 1
-    fi
-    success "Rebased onto ${base_branch}"
+  if ! _rebase_onto_base "$base_branch" "$branch"; then
+    warn "Rebase paused — conflicts detected."
+    echo -e "  Fix conflicts, then:  git add <files> && git rebase --continue" >&2
+    echo -e "  To abort:             git rebase --abort && git checkout ${branch}" >&2
+    exit 1
   fi
+  success "Rebased onto ${base_branch}"
 
   info "Pushing ${branch} to origin..."
   git push --force-with-lease origin "${branch}" >&2 \
