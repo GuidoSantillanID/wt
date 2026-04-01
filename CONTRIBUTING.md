@@ -49,6 +49,7 @@ Install: `brew install shellcheck` (macOS) or `apt-get install shellcheck` (Ubun
 - All UI output goes to stderr; only directory paths (`wt new`, `wt finish`, `wt abandon`, `wt go`, `wt open`) and `wt list` table go to stdout (shell wrapper contract)
 - Safety gates: `--yes` skips routine confirms; `--force` overrides non-skippable gates (untracked files in finish, unpushed commits in abandon)
 - Both `wt new` and `wt open` create managed worktrees with a `base_branch` in `.wt-meta`. `wt open` uses the target branch as `base_branch`; `wt new` uses the current branch. Both support the full lifecycle (`finish`, `abandon`, `sync`, `retarget`, `pr`).
+- `wt open` has three modes: no args (list branches), one arg (slug from branch name), two args (slug from description). The description mode uses the same `slugify()` as `wt new`, allowing multiple worktrees from the same branch.
 
 ## Test-Driven Development
 

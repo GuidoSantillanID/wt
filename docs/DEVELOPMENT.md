@@ -22,7 +22,7 @@ branch=wt/fix-the-sidebar-overflow-bug
 
 **Reading:** `grep "^key=" file | head -1 | cut -d= -f2-` — no eval, no injection risk. All seven fields are required for `wt finish`/`wt abandon`. `wt list` needs `branch`, `base_branch`, `description`, `project`, `created`.
 
-`wt open` creates the same format — `base_branch` is set to the target branch, `branch` is the new `wt/<slug>` branch. Both `wt new` and `wt open` worktrees support the full lifecycle (`finish`, `abandon`, `sync`, `retarget`, `pr`).
+`wt open` creates the same format — `base_branch` is set to the target branch, `branch` is the new `wt/<slug>` branch. The slug comes from either the branch name (default) or a user-provided description (second positional argument). Both `wt new` and `wt open` worktrees support the full lifecycle (`finish`, `abandon`, `sync`, `retarget`, `pr`).
 
 This file is the source of truth for `wt finish`/`wt abandon` (knows where to merge back) and `wt list` (knows the task description). The file is excluded from `git status` via `.git/info/exclude` (worktree-local gitignore), so it doesn't inflate the dirty count.
 
@@ -192,6 +192,37 @@ A Go/Rust port eliminates all of these as external processes except `git`.
 12. Add ".wt-meta" to GIT_COMMON_DIR/info/exclude (if not present)
 13. Print generic dependency hint
 14. Print worktree_path to stdout (shell wrapper uses this to cd)
+```
+
+### `wt open [<branch>] ["description"]`
+
+Three modes:
+
+```
+Mode 1: no args → list branches + exit 1
+  1. Resolve project root (git rev-parse --show-toplevel; follow worktree pointer if needed)
+  2. Print local branches (excluding wt/* branches) to stderr
+  3. Print remote branches (excluding HEAD pointers and wt/* branches) to stderr
+  4. Print usage hint to stderr
+  5. Exit 1
+
+Mode 2: wt open <branch> → slug from branch name
+Mode 3: wt open <branch> "description" → slug from description
+
+  1. Parse args: positional only — first = branch, second = description (optional), flags → error
+  2. Resolve project root (same as wt new: follow worktree pointer if inside a worktree)
+  3. Validate branch exists locally: git rev-parse --verify <branch>
+  4. Slugify: if description given, slugify(description); else slugify(branch with / → space)
+     Same slugify() as wt new — allows multiple worktrees from the same branch via different descriptions
+  5. worktree_path = <project_root>/.worktrees/<slug>
+  6. Conflict checks: worktree dir exists? → error; wt/<slug> branch exists? → error
+  7. _register_project(project_root)
+  8. mkdir -p <project_root>/.worktrees
+  9. Add ".worktrees/" to info/exclude (if not present)
+  10. git worktree add <worktree_path> -b wt/<slug> <branch>
+  11. Write .wt-meta (base_branch = target branch, description = description or branch name)
+  12. Add ".wt-meta" to GIT_COMMON_DIR/info/exclude (if not present)
+  13. Print worktree_path to stdout (shell wrapper cd)
 ```
 
 ### `wt finish [--yes|-y] [--force]`

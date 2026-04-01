@@ -2130,6 +2130,96 @@ cd "$REPO"
 git -C "$REPO" worktree remove "$SYNC_WT" --force 2>/dev/null || true
 git -C "$REPO" branch -D "wt/feature-sync-open-test" 2>/dev/null || true
 
+# ── wt open — branch listing ────────────────────────────────────────────────
+
+section "wt open — no args lists local branches"
+cd "$REPO"
+git -C "$REPO" checkout -q main
+open_list=$(wt open 2>&1 || true)
+# main branch should appear in listing
+assert_contains "lists main branch" "main" "$open_list"
+# feature branches created earlier should appear
+assert_contains "lists feature branch" "feature/open-test" "$open_list"
+# wt/* branches should NOT appear
+assert_not_contains "excludes wt/ branches" "wt/" "$open_list"
+
+section "wt open — no args shows remote branches"
+# Create a remote to test remote branch listing
+git -C "$REPO" remote add fake-origin "$REPO" 2>/dev/null || true
+git -C "$REPO" fetch fake-origin --quiet 2>/dev/null || true
+open_list_remote=$(wt open 2>&1 || true)
+assert_contains "lists remote branch" "fake-origin/" "$open_list_remote"
+
+section "wt open — no args exits non-zero (no cd)"
+wt open > /dev/null 2>&1 || open_exit=$?
+assert_eq "exit code is non-zero" "1" "${open_exit:-0}"
+
+# ── wt open — description parameter ─────────────────────────────────────────
+
+section "wt open — with description uses description as slug"
+cd "$REPO"
+git -C "$REPO" checkout -q main
+DESC_WT="${REPO}/.worktrees/custom-slug-name"
+desc_stdout=$(wt open "feature/open-test" "custom slug name" 2>/dev/null)
+assert_eq "stdout is worktree path" "$DESC_WT" "$desc_stdout"
+assert_dir_exists "worktree dir created with description slug" "$DESC_WT"
+
+section "wt open — description: branch is wt/<description-slug>"
+desc_head=$(git -C "$DESC_WT" symbolic-ref --short HEAD 2>/dev/null)
+assert_eq "branch is wt/custom-slug-name" "wt/custom-slug-name" "$desc_head"
+
+section "wt open — description: .wt-meta has correct base_branch"
+desc_base=$(grep "^base_branch=" "${DESC_WT}/.wt-meta" 2>/dev/null | head -1 | cut -d= -f2- || true)
+assert_eq "base_branch is feature/open-test" "feature/open-test" "$desc_base"
+
+section "wt open — description: .wt-meta description is the provided description"
+desc_desc=$(grep "^description=" "${DESC_WT}/.wt-meta" 2>/dev/null | head -1 | cut -d= -f2- || true)
+assert_eq "description is custom slug name" "custom slug name" "$desc_desc"
+
+section "wt open — description: feature file is present"
+assert_file_exists "feature.txt in description worktree" "${DESC_WT}/feature.txt"
+
+section "wt open — second worktree from same branch with different description"
+DESC_WT2="${REPO}/.worktrees/another-worktree"
+desc2_stdout=$(wt open "feature/open-test" "another worktree" 2>/dev/null)
+assert_eq "stdout is second worktree path" "$DESC_WT2" "$desc2_stdout"
+assert_dir_exists "second worktree dir created" "$DESC_WT2"
+desc2_head=$(git -C "$DESC_WT2" symbolic-ref --short HEAD 2>/dev/null)
+assert_eq "second branch is wt/another-worktree" "wt/another-worktree" "$desc2_head"
+
+# Cleanup
+cd "$REPO"
+git -C "$REPO" worktree remove "$DESC_WT" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/custom-slug-name" 2>/dev/null || true
+git -C "$REPO" worktree remove "$DESC_WT2" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/another-worktree" 2>/dev/null || true
+
+# ── wt open — stdout contract ───────────────────────────────────────────────
+
+section "wt open — stdout is ONLY the worktree path (no UI noise)"
+cd "$REPO"
+git -C "$REPO" checkout -q main
+git -C "$REPO" checkout -q -b feature/stdout-contract-test
+echo "stdout test" > "$REPO/stdout-test.txt"
+git -C "$REPO" add stdout-test.txt
+git -C "$REPO" commit -q -m "stdout contract test"
+git -C "$REPO" checkout -q main
+STDOUT_WT="${REPO}/.worktrees/feature-stdout-contract-test"
+stdout_out=$(wt open "feature/stdout-contract-test" 2>/dev/null)
+# stdout should be exactly one line: the path
+stdout_lines=$(echo "$stdout_out" | wc -l | tr -d ' ')
+assert_eq "stdout is exactly 1 line" "1" "$stdout_lines"
+assert_eq "stdout is worktree path" "$STDOUT_WT" "$stdout_out"
+
+section "wt open — no-args stdout is empty"
+noarg_stdout=$(wt open 2>/dev/null || true)
+assert_eq "no-args stdout is empty" "" "$noarg_stdout"
+
+# Cleanup
+cd "$REPO"
+git -C "$REPO" worktree remove "$STDOUT_WT" --force 2>/dev/null || true
+git -C "$REPO" branch -D "wt/feature-stdout-contract-test" 2>/dev/null || true
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 
 echo ""

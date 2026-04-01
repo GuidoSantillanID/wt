@@ -8,7 +8,9 @@ Works great standalone. Works *especially* well with **Claude Code + tmux** — 
 
 ```
 wt new "add dark mode toggle"     # create worktree + branch, cd into it
+wt open                           # list available branches
 wt open feature/my-branch         # branch off an existing branch into a worktree
+wt open feature/my-branch "desc"  # same, but slug from description (multiple worktrees ok)
 wt finish                         # rebase + fast-forward + clean up
 wt sync                           # merge local base into worktree (LLM-friendly)
 wt retarget [branch]              # change which branch this worktree targets
@@ -93,6 +95,9 @@ The registry is a plain text file — one absolute project path per line.
 # Create a worktree from inside a project directory
 wt new "fix the login bug"
 
+# List available branches (local + remote)
+wt open
+
 # Branch off an existing feature branch into a worktree
 wt open feature/my-branch
 
@@ -151,9 +156,15 @@ Creates a new git worktree with an auto-named branch.
 - Registers the project automatically on first use
 - Prints a reminder to install dependencies if needed (worktrees don't share `node_modules`/`venv`)
 
-### `wt open <branch>`
+### `wt open [<branch>] ["description"]`
 
 Creates a worktree branching off an existing local branch — for working on top of feature branches in parallel with full lifecycle support.
+
+**Three modes:**
+
+1. **`wt open`** (no args) — lists local and remote branches, prints usage, exits non-zero. Useful for discovering branch names.
+2. **`wt open <branch>`** — creates a `wt/<slug>` branch off the target, with the slug derived from the branch name.
+3. **`wt open <branch> "description"`** — same as above, but the slug is derived from the description instead of the branch name. This allows creating multiple worktrees from the same branch.
 
 - The branch must exist locally (run `git fetch` first if needed)
 - Creates a `wt/<slug>` branch off the target, with `base_branch` set to the target
@@ -161,8 +172,11 @@ Creates a worktree branching off an existing local branch — for working on top
 - `wt go`, `wt list`, `wt status`, `wt doctor`, `wt retarget`, and `wt pr` all work
 
 ```bash
-wt open feature/my-branch        # creates wt/feature-my-branch off feature/my-branch
+wt open                           # list branches (exits 1)
+wt open feature/my-branch         # creates wt/feature-my-branch off feature/my-branch
 wt open GP-123-fix-login          # works with any branch naming convention
+wt open dev "fix auth timeout"    # creates wt/fix-auth-timeout off dev
+wt open dev "add retry logic"     # creates wt/add-retry-logic off dev (same branch, different slug)
 ```
 
 ### `wt finish [--force]`
@@ -352,6 +366,9 @@ wt finish   # rebases onto base, fast-forwards, cleans up
 Use `wt open` when you already have feature branches and want to work on them in isolation:
 
 ```bash
+# Don't remember the branch name? List them
+wt open
+
 # Main checkout is on feature-A, want to also work on feature-B
 wt open feature/payment-api       # creates wt/feature-payment-api off feature/payment-api
 
@@ -361,6 +378,16 @@ wt finish
 
 # Or abandon without merging (feature/payment-api stays untouched)
 wt abandon
+```
+
+### Multiple worktrees from the same branch
+
+Use the description argument to create multiple worktrees off the same branch with different slugs:
+
+```bash
+wt open dev "fix auth timeout"    # wt/fix-auth-timeout off dev
+wt open dev "add retry logic"     # wt/add-retry-logic off dev
+wt list                           # both show dev as base_branch
 ```
 
 ### Recovering from a conflict in `wt finish`

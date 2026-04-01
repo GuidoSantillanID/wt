@@ -15,7 +15,7 @@
 #   wt pr [--draft] [--yes|-y]                  Push branch and open a GitHub PR (requires gh)
 #   wt status                                   Show current worktree info
 #   wt list                                     Show all worktrees across projects
-#   wt open <branch>                             Create a worktree branching off an existing branch
+#   wt open [<branch>] ["description"]           List branches, or create worktree off existing branch
 #   wt go <branch-or-slug>                      Navigate to an existing worktree
 #   wt doctor [--dry-run]                       Check and repair worktree health
 #   wt help                                     Show this help
@@ -216,7 +216,8 @@ USAGE
   wt pr [--draft] [--yes|-y]                  Push branch and open a GitHub PR (requires gh)
   wt status                                   Show current worktree info
   wt list                                     Show all active worktrees across projects
-  wt open <branch>                            Create a worktree branching off an existing branch
+  wt open                                     List available branches
+  wt open <branch> ["description"]            Create a worktree branching off an existing branch
   wt go <branch-or-slug>                      Navigate to an existing worktree
   wt doctor [--dry-run]                       Check for orphaned branches/dirs, fix interactively
   wt help                                     Show this help
@@ -249,6 +250,12 @@ EXAMPLES
   # Create a worktree branching off an existing feature branch:
   wt open feature/my-branch
 
+  # Create a second worktree from the same branch with a custom name:
+  wt open feature/my-branch "fix the login bug"
+
+  # List available branches to open:
+  wt open
+
 NOTES
   • Run `wt new` from inside a project — it registers the project automatically
   • Worktrees are created at <project>/.worktrees/<slug>/
@@ -264,24 +271,63 @@ NOTES
   • After merging a PR on GitHub, run `wt abandon` to clean up the worktree
   • Projects are tracked in ${XDG_CONFIG_HOME:-~/.config}/wt/projects (one path per line)
   • Override registry path: export WT_REGISTRY=/path/to/registry
-  • `wt open` creates a wt/<slug> branch off an existing branch — full lifecycle (finish/abandon/sync) works
+  • `wt open <branch>` creates a wt/<slug> branch off an existing branch — full lifecycle works
+  • `wt open <branch> "description"` uses description for the slug (allows multiple worktrees from one branch)
+  • `wt open` with no args lists available local and remote branches
   • Inside tmux, cleanup commands (finish/abandon) show a reminder to close the current window
 HELP
 }
 
-# wt open <branch> — create a worktree branching off an existing branch
+# wt open [<branch>] ["description"] — list branches, or create worktree off existing branch
 cmd_open() {
-  local branch=""
+  local branch="" description=""
 
   for arg in "$@"; do
     case "$arg" in
       -*) error "Unknown flag: $arg" ;;
-      *) [[ -z "$branch" ]] && branch="$arg" \
-           || error "Usage: wt open <branch>" ;;
+      *)
+        if [[ -z "$branch" ]]; then
+          branch="$arg"
+        elif [[ -z "$description" ]]; then
+          description="$arg"
+        else
+          error "Usage: wt open <branch> [\"description\"]"
+        fi
+        ;;
     esac
   done
 
-  [[ -z "$branch" ]] && error "Usage: wt open <branch>"
+  # No args: list available branches and exit
+  if [[ -z "$branch" ]]; then
+    local project_root
+    project_root=$(git rev-parse --show-toplevel 2>/dev/null) \
+      || error "Not inside a git repository."
+    if [[ -f "${project_root}/.git" ]]; then
+      project_root=$(get_main_worktree) \
+        || error "Could not resolve main worktree path"
+    fi
+
+    info "Local branches:"
+    git -C "$project_root" branch 2>/dev/null \
+      | sed 's/^[* ]*/  /' \
+      | { grep -v '^ *wt/' || true; } >&2
+
+    local remotes
+    remotes=$(git -C "$project_root" branch -r 2>/dev/null \
+      | sed 's/^[* ]*/  /' \
+      | grep -v ' -> ' \
+      | grep -v '^ *[^ ]*/HEAD' \
+      | grep -v 'wt/' || true)
+    if [[ -n "$remotes" ]]; then
+      echo "" >&2
+      info "Remote branches:"
+      echo "$remotes" >&2
+    fi
+
+    echo "" >&2
+    info "Usage: wt open <branch> [\"description\"]"
+    exit 1
+  fi
 
   # Resolve project root
   local project_root
@@ -298,11 +344,15 @@ cmd_open() {
   git -C "$project_root" rev-parse --verify "$branch" &>/dev/null \
     || error "Branch '${branch}' does not exist locally. Run 'git fetch' first?"
 
-  # Slugify the branch name for the worktree directory
-  # Replace / with space first so slugify converts them to hyphens
+  # Slugify: use description if provided, otherwise branch name
   local slug
-  slug=$(slugify "${branch//\// }")
-  [[ -z "$slug" ]] && error "Could not generate a slug from branch name: '$branch'"
+  if [[ -n "$description" ]]; then
+    slug=$(slugify "$description")
+  else
+    # Replace / with space first so slugify converts them to hyphens
+    slug=$(slugify "${branch//\// }")
+  fi
+  [[ -z "$slug" ]] && error "Could not generate a slug from '${description:-$branch}'"
 
   local worktree_path="${project_root}/${WORKTREES_DIR}/${slug}"
 
@@ -341,7 +391,7 @@ cmd_open() {
   cat > "${worktree_path}/${META_FILE}" <<EOF
 base_branch=${branch}
 created=${created}
-description=${branch}
+description=${description:-${branch}}
 project=${project_name}
 project_root=${project_root}
 slug=${slug}
